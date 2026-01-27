@@ -2,9 +2,8 @@ import { View, Text, Image, ImageBackground, ScrollView, Button, TextInput, Styl
 import { SafeAreaView } from 'react-native-safe-area-context';
 import ButtonRound from "./components/ButtonRound"
 const mapImg = require("./assets/carte-geographique-du-monde.jpg");
-import Entypo from '@expo/vector-icons/Entypo';
-import FontAwesome from '@expo/vector-icons/FontAwesome';
 import {
+  NavigationContainer,
   createStaticNavigation,
   useNavigation,
 } from '@react-navigation/native';
@@ -16,17 +15,19 @@ import Animated, {
   withTiming,
   interpolate,
 } from 'react-native-reanimated';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import {
+  createDrawerNavigator,
+  DrawerContentScrollView,
+  DrawerItem,
+} from '@react-navigation/drawer';
 
-const MyTabs = createBottomTabNavigator({
-  screens: {
-    Home: App,
-    Profile: App,
-  },
-});
-const Navigation = createStaticNavigation(MyTabs);
+//Icons
+import Entypo from '@expo/vector-icons/Entypo';
+import FontAwesome from '@expo/vector-icons/FontAwesome';
+import AntDesign from '@expo/vector-icons/AntDesign';
 
-export default function App() {
-
+function HomeScreen() {
   //0 = fully collapsed, 1 = fully expanded
   const progress = useSharedValue(0);
   const maxSearchWidth = useSharedValue(0);
@@ -105,33 +106,106 @@ export default function App() {
   });
 
   //Fullscreen component
-  return <View style={styles.screen}>
-    <StatusBar translucent backgroundColor="transparent" />
-    <ImageBackground source={mapImg} style={{ flex: 1 }}>
-      <SafeAreaView style={styles.wrapper} onLayout={onLayout}>
+  return (
+    <View style={styles.screen}>
+      <StatusBar translucent backgroundColor="transparent"/>
+      <ImageBackground source={mapImg} style={{ flex: 1 }}>
+        <SafeAreaView style={styles.wrapper} onLayout={onLayout}>
 
-        <ButtonRound>
-          <Entypo name="menu" size={24} color="black" />
-        </ButtonRound>
+          <ButtonRound>
+            <Entypo name="menu" size={24} color="black" />
+          </ButtonRound>
 
-        <Pressable onPress={toggleSearch} style={{ flex: 0 }}>
-          <Animated.View style={[styles.searchContainer, searchBarStyle]}>
-            <Animated.View style={[styles.iconWrapper, iconStyle]}>
-              <FontAwesome name="search" size={20} color="black" />
+          <Pressable onPress={toggleSearch} style={{ flex: 0 }}>
+            <Animated.View style={[styles.searchContainer, searchBarStyle]}>
+              <Animated.View style={[styles.iconWrapper, iconStyle]}>
+                <FontAwesome name="search" size={20} color="black" />
+              </Animated.View>
+              <Animated.View style={[styles.inputWrapper, inputStyle]}>
+                <TextInput placeholder="Search TravelSense..." style={styles.input} ref={inputRef} readOnly={isSearchBarFocused} />
+              </Animated.View>
             </Animated.View>
-            <Animated.View style={[styles.inputWrapper, inputStyle]}>
-              <TextInput placeholder="Search TravelSense..." style={styles.input} ref={inputRef} readOnly={isSearchBarFocused} />
-            </Animated.View>
-          </Animated.View>
-        </Pressable>
+          </Pressable>
 
-        <ButtonRound name="location-pin" size={5}>
-          <Entypo name="location-pin" size={24} color="black" />
-        </ButtonRound>
+          <ButtonRound onPress={() => console.log("hello")}>
+            <Entypo name="location-pin" size={24} color="black" />
+          </ButtonRound>
 
-      </SafeAreaView>
-    </ImageBackground>
-  </View>
+        </SafeAreaView>
+      </ImageBackground>
+    </View>
+  );
+}
+
+function DataScreen() {
+  return (
+    <View>
+      <Text>Hello World!</Text>
+    </View>
+  );
+}
+
+function JournalScreen() {
+  return null;
+}
+
+const Tab = createBottomTabNavigator();
+
+//Dummy component for navigator tabs.
+const Empty = () => <View />;
+
+const Drawer = createDrawerNavigator();
+
+export default function App({ navigation }) {
+
+  const onPressHome = () => {
+    console.log('Home button pressed');
+  };
+
+  const onPressData = () => {
+    console.log('Data button pressed');
+  };
+
+  const onPressJournal = () => {
+    console.log('Journal button pressed');
+  };
+
+  return (
+    <NavigationContainer>
+    <Tab.Navigator screenOptions={{ headerShown: false }}>
+      <Tab.Screen
+        name="Home"
+        component={HomeScreen}
+        options={{
+          tabBarIcon: ({ color, size }) => (
+            <AntDesign name="home" size={24} color="black" />
+          )
+        }} />
+      <Tab.Screen
+        name="My Data"
+        component={DataScreen}
+        options={{
+          tabBarIcon: ({ color, size }) => (
+            <AntDesign name="database" size={24} color="black" />
+          )
+        }} />
+      <Tab.Screen
+        name="Journal"
+        component={Empty}
+        listeners={{
+          tabPress: e => {
+            e.preventDefault();
+            onPressJournal();
+          }
+        }}
+        options={{
+          tabBarIcon: ({ color, size }) => (
+            <AntDesign name="book" size={24} color="black" />
+          )
+        }} />
+    </Tab.Navigator>
+    </NavigationContainer>
+  )
 }
 
 const styles = StyleSheet.create({
