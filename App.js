@@ -26,6 +26,23 @@ import {
 import Entypo from '@expo/vector-icons/Entypo';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import AntDesign from '@expo/vector-icons/AntDesign';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+
+/* ------------------ Screens ------------------ */
+
+const Stack = createNativeStackNavigator();
+
+function DrawerStack() {
+  return (
+    <Stack.Navigator screenOptions={{
+      animation: 'slide_from_right', headerShown: true
+    }}>
+      <Stack.Screen name="Home" component={Tabs} options={{headerShown: false}}/>
+      <Stack.Screen name="Settings" component={SettingsScreen} />
+      <Stack.Screen name="About Us" component={AboutUsScreen} />
+    </Stack.Navigator>
+  )
+}
 
 function HomeScreen() {
   //0 = fully collapsed, 1 = fully expanded
@@ -105,14 +122,27 @@ function HomeScreen() {
     };
   });
 
+  const [barStyle, setBarStyle] = useState('light-content');
+
+  const onRunFunction = (barStyle) => {
+    setBarStyle(barStyle);
+  };
+
   //Fullscreen component
+  const navigation = useNavigation();
+  navigation.addListener('drawerClose', () => {
+    onRunFunction('light-content');
+  });
   return (
     <View style={styles.screen}>
-      <StatusBar translucent backgroundColor="transparent"/>
+      <StatusBar translucent backgroundColor="transparent" barStyle={barStyle} />
       <ImageBackground source={mapImg} style={{ flex: 1 }}>
         <SafeAreaView style={styles.wrapper} onLayout={onLayout}>
 
-          <ButtonRound>
+          <ButtonRound onPress={() => {
+            navigation.openDrawer();
+            onRunFunction('dark-content')
+          }}>
             <Entypo name="menu" size={24} color="black" />
           </ButtonRound>
 
@@ -140,7 +170,7 @@ function HomeScreen() {
 function DataScreen() {
   return (
     <View>
-      <Text>Hello World!</Text>
+      <Text>This is the data screen.</Text>
     </View>
   );
 }
@@ -149,29 +179,36 @@ function JournalScreen() {
   return null;
 }
 
+function SettingsScreen() {
+  return (
+    <View>
+      <Text>This is the settings screen.</Text>
+    </View>
+  )
+}
+
+function AboutUsScreen() {
+  return (
+    <View>
+      <Text>This is the about us screen.</Text>
+    </View>
+  )
+}
+
+/* ------------------ Tabs ------------------ */
+
 const Tab = createBottomTabNavigator();
 
 //Dummy component for navigator tabs.
 const Empty = () => <View />;
 
-const Drawer = createDrawerNavigator();
-
-export default function App({ navigation }) {
-
-  const onPressHome = () => {
-    console.log('Home button pressed');
-  };
-
-  const onPressData = () => {
-    console.log('Data button pressed');
-  };
+function Tabs() {
 
   const onPressJournal = () => {
     console.log('Journal button pressed');
   };
 
   return (
-    <NavigationContainer>
     <Tab.Navigator screenOptions={{ headerShown: false }}>
       <Tab.Screen
         name="Home"
@@ -204,6 +241,58 @@ export default function App({ navigation }) {
           )
         }} />
     </Tab.Navigator>
+  )
+}
+
+/* ------------------ Custom Drawer ------------------ */
+
+function CustomDrawerContent(props) {
+  return (
+    <DrawerContentScrollView {...props}>
+      <View style={styles.logoContainer}>
+        <Image
+          source={require('./assets/travelsense-banner.png')}
+          style={styles.logo}
+          resizeMode="contain"
+          width={310}
+        />
+      </View>
+
+      <DrawerItem
+        label="Home"
+        icon={({ color, size }) => (<AntDesign name="home" size={24} color="black" />)}
+        onPress={() => props.navigation.navigate('Main', {screen: 'HomeScreen'})}
+      />
+      <DrawerItem
+        label="Settings"
+        icon={({ color, size }) => (<AntDesign name="setting" size={24} color="black" />)}
+        onPress={() => props.navigation.navigate('Main', {screen: 'Settings'})}
+      />
+      <DrawerItem
+        label="About Us"
+        icon={({ color, size }) => (<AntDesign name="question-circle" size={24} color="black" />)}
+        onPress={() => props.navigation.navigate('Main', {screen: 'About Us'})}
+      />
+    </DrawerContentScrollView>
+  );
+}
+
+/* ------------------ Drawer ------------------ */
+
+const Drawer = createDrawerNavigator();
+
+export default function App({ navigation }) {
+
+  return (
+    <NavigationContainer>
+      <Drawer.Navigator
+        drawerContent={(props) => <CustomDrawerContent {...props} />}
+        screenOptions={{
+          headerShown: false,
+        }}
+      >
+        <Drawer.Screen name="Main" component={DrawerStack}></Drawer.Screen>
+      </Drawer.Navigator>
     </NavigationContainer>
   )
 }
