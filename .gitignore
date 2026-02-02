@@ -40,3 +40,7 @@ yarn-error.*
 /ios
 /android
 /.vscode
+/.idea
+/.gradle
+eas.json
+package-lock.json
