@@ -1,0 +1,112 @@
+import React, { useEffect, useMemo, useRef } from "react";
+import { View, Dimensions, StyleSheet } from "react-native";
+import { Accelerometer } from "expo-sensors";
+import {
+  Canvas,
+  Path,
+  Skia,
+} from "@shopify/react-native-skia";
+import Animated, {
+  useSharedValue,
+  withTiming,
+  runOnJS,
+  useDerivedValue,
+} from "react-native-reanimated";
+import { Gesture, PanGestureHandler } from "react-native-gesture-handler";
+
+/* -------------------- CONFIG -------------------- */
+
+const SAMPLE_HZ = 50;                 // sensor sampling rate
+const VISIBLE_SECONDS = 5;            // time window on screen
+const HISTORY_SECONDS = 60;            // scrollback depth
+
+const DX = 4;                          // pixels per sample
+const MAX_VISIBLE_SAMPLES = SAMPLE_HZ * VISIBLE_SECONDS;
+const MAX_HISTORY_SAMPLES = SAMPLE_HZ * HISTORY_SECONDS;
+
+const { width, height } = Dimensions.get("window");
+export const GRAPH_HEIGHT = height * 0.4;
+const MID_Y = GRAPH_HEIGHT / 2;
+
+/* -------------------- DATA BUFFER -------------------- */
+
+class RingBuffer {
+  data: number[];
+  index = 0;
+
+  constructor(size: number) {
+    this.data = new Array(size).fill(0);
+  }
+
+  push(v: number) {
+    this.data[this.index] = v;
+    this.index = (this.index + 1) % this.data.length;
+  }
+
+  read(offset: number) {
+    const i =
+      (this.index - 1 - offset + this.data.length) %
+      this.data.length;
+    return this.data[i];
+  }
+}
+
+  const bufferRef = useRef(new RingBuffer(MAX_HISTORY_SAMPLES));
+
+  export const translateX = useSharedValue(0);
+  const scrollOffset = useSharedValue(0);
+  const isLive = useSharedValue(true);
+
+  /* ---------- SENSOR COLLECTION ---------- */
+
+  useEffect(() => {
+    Accelerometer.setUpdateInterval(1000 / SAMPLE_HZ);
+
+    const sub = Accelerometer.addListener(({ z }) => {
+      bufferRef.current.push(z);
+      if (isLive.value) {
+        translateX.value -= DX;
+      }
+    });
+
+    return () => sub.remove();
+  }, []);
+
+  /* ---------- PATH COMPUTATION ---------- */
+
+  const path = useDerivedValue(() => {
+    const p = Skia.Path.Make();
+    p.moveTo(0, MID_Y);
+
+    for (let i = 0; i < MAX_VISIBLE_SAMPLES; i++) {
+      const v = bufferRef.current.read(
+        i + Math.floor(scrollOffset.value / DX)
+      );
+      const x = width - i * DX;
+      const y = MID_Y - v * 60; // scale
+      p.lineTo(x, y);
+    }
+    return p;
+  }, [scrollOffset]);
+
+  /* ---------- GESTURE ---------- */
+
+export const panGesture = Gesture.Pan()
+    .onStart(() => {
+        //gesture just became active
+        isLive.value = false;
+    })
+    .onChange((e) => {
+        //fired continuously while pan is active
+        scrollOffset.value = Math.max(
+            0,
+            scrollOffset.value - e.translationX
+        );
+    })
+    .onEnd(() => {
+        //gesture ended
+        if (scrollOffset.value < DX * 5) {
+            scrollOffset.value = 0;
+            isLive.value = true;
+        }
+    });

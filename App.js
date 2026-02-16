@@ -40,7 +40,16 @@ import {
 } from '@react-navigation/drawer';
 import Svg, { Polygon } from 'react-native-svg';
 import * as Progress from 'react-native-progress';
-import MapView from 'react-native-maps';
+import MapView, { PROVIDER_GOOGLE } from 'react-native-maps';
+import { Accelerometer, Gyroscope } from "expo-sensors";
+import {
+  Canvas,
+  Path,
+  Skia,
+  Group,
+  useDerivedValue,
+} from "@shopify/react-native-skia";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
 
 //Icons
 import Entypo from '@expo/vector-icons/Entypo';
@@ -157,8 +166,10 @@ function HomeScreen() {
   });
   return (
     <View style={styles.fullscreen}>
+      <MapView provider={PROVIDER_GOOGLE} style={StyleSheet.absoluteFillObject}/>
       <StatusBar translucent backgroundColor="transparent" barStyle={barStyle} />
-      <ImageBackground source={mapImg} style={{ flex: 1 }}>
+      {/* <ImageBackground source={mapImg} style={{ flex: 1 }}> */}
+      <View style={{ flex: 1 }}>
         <SafeAreaView style={styles.wrapper} onLayout={onLayout}>
 
           <ButtonRound onPress={() => {
@@ -184,7 +195,7 @@ function HomeScreen() {
           </ButtonRound>
 
         </SafeAreaView>
-      </ImageBackground>
+      </View>
     </View>
   );
 }
@@ -239,11 +250,11 @@ function DataScreen() {
       </View>
         <Text style={{fontWeight: "bold", fontSize: 20, padding: 10 }}>Sensors used: </Text>
         <ScrollView style={{borderRadius: 25}}>
-          <GraphCard title="GPS: " />
-          <GraphCard title="Accl: " />
-          <GraphCard title="Gyro: " />
-          <GraphCard title="Baro: " />
-          <GraphCard title="Mag:" />
+          <GraphCard title="GPS: " sensor="gps"/>
+          <GraphCard title="Accl: " sensor="accelerometer"/>
+          <GraphCard title="Gyro: " sensor="gyroscope"/>
+          <GraphCard title="Baro: " sensor="barometer"/>
+          <GraphCard title="Mag:" sensor="magnetometer"/>
           </ScrollView>
     </View>
   );
@@ -406,7 +417,7 @@ export default function App({ navigation }) {
       <Drawer.Navigator
         drawerContent={(props) => <CustomDrawerContent {...props} />}
         screenOptions={{
-          headerShown: false, drawerType: "front"
+          headerShown: false, drawerType: "front", detachInactiveScreens: false,
         }}
       >
         <Drawer.Screen name="Main" component={DrawerStack}></Drawer.Screen>

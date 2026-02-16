@@ -44,3 +44,4 @@ yarn-error.*
 /.gradle
 eas.json
 package-lock.json
+.env
