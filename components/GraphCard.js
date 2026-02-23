@@ -8,8 +8,7 @@ import {
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useDerivedValue, useSharedValue } from "react-native-reanimated";
 
-import { Accelerometer, Gyroscope, Magnetometer, Barometer } from 'expo-sensors';
-import * as Location from 'expo-location';
+import { useSensorData } from '../src/sensors/Sensor';
 
 const { width: screenWidth } = Dimensions.get('window');
 
@@ -29,78 +28,47 @@ const SENSOR_CONFIG = {
 
 export default function GraphCard({ title = "Text: ", sensor = "accelerometer" }) {
 	const config = SENSOR_CONFIG[sensor] || SENSOR_CONFIG["accelerometer"];
-	const [data, setData] = useState(Array(config.dims).fill().map(() => Array(DATA_LENGTH).fill(0)));
-	const [subscription, setSubscription] = useState(null);
 	const scrollViewRef = useRef(null);
+	const sensorData = useSensorData();
+	const [data, setData] = useState(Array(config.dims).fill().map(() => Array(DATA_LENGTH).fill(0)));
 
 	useEffect(() => {
-		let sub;
-		let locationWatcher;
-		let isMounted = true;
-		const update = (values) => {
-			setData(prev => prev.map((arr, i) => {
-				const newArr = arr.slice(1);
-				newArr.push(values[i]);
-				return newArr;
-			}));
-		};
+		// Map sensorData to graph values
+		let values = [];
 		if (sensor === "accelerometer") {
-			Accelerometer.setUpdateInterval(16);
-			sub = Accelerometer.addListener(({ x, y, z }) => {
-				update([
-					((x + 2) / 4) * GRAPH_HEIGHT,
-					((y + 2) / 4) * GRAPH_HEIGHT,
-					((z + 2) / 4) * GRAPH_HEIGHT,
-				]);
-			});
+			values = [
+				((sensorData.accelerometer.x + 2) / 4) * GRAPH_HEIGHT,
+				((sensorData.accelerometer.y + 2) / 4) * GRAPH_HEIGHT,
+				((sensorData.accelerometer.z + 2) / 4) * GRAPH_HEIGHT,
+			];
 		} else if (sensor === "gyroscope") {
-			Gyroscope.setUpdateInterval(16);
-			sub = Gyroscope.addListener(({ x, y, z }) => {
-				update([
-					((x + 8) / 16) * GRAPH_HEIGHT,
-					((y + 8) / 16) * GRAPH_HEIGHT,
-					((z + 8) / 16) * GRAPH_HEIGHT,
-				]);
-			});
+			values = [
+				((sensorData.gyroscope.x + 8) / 16) * GRAPH_HEIGHT,
+				((sensorData.gyroscope.y + 8) / 16) * GRAPH_HEIGHT,
+				((sensorData.gyroscope.z + 8) / 16) * GRAPH_HEIGHT,
+			];
 		} else if (sensor === "magnetometer") {
-			Magnetometer.setUpdateInterval(16);
-			sub = Magnetometer.addListener(({ x, y, z }) => {
-				update([
-					((x + 100) / 200) * GRAPH_HEIGHT,
-					((y + 100) / 200) * GRAPH_HEIGHT,
-					((z + 100) / 200) * GRAPH_HEIGHT,
-				]);
-			});
+			values = [
+				((sensorData.magnetometer.x + 100) / 200) * GRAPH_HEIGHT,
+				((sensorData.magnetometer.y + 100) / 200) * GRAPH_HEIGHT,
+				((sensorData.magnetometer.z + 100) / 200) * GRAPH_HEIGHT,
+			];
 		} else if (sensor === "barometer") {
-			Barometer.setUpdateInterval(16);
-			sub = Barometer.addListener(({ pressure }) => {
-				update([
-					(pressure / 1100) * GRAPH_HEIGHT // Normalize to 0-1100 hPa
-				]);
-			});
+			values = [
+				(sensorData.barometer.pressure / 1100) * GRAPH_HEIGHT
+			];
 		} else if (sensor === "gps") {
-			(async () => {
-				let { status } = await Location.requestForegroundPermissionsAsync();
-				if (status !== 'granted') return;
-				locationWatcher = await Location.watchPositionAsync({ accuracy: Location.Accuracy.Highest, timeInterval: 16, distanceInterval: 0 },
-					(loc) => {
-						if (!isMounted) return;
-						// Normalize latitude [-90,90] and longitude [-180,180]
-						update([
-							((loc.coords.latitude + 90) / 180) * GRAPH_HEIGHT,
-							((loc.coords.longitude + 180) / 360) * GRAPH_HEIGHT,
-						]);
-					}
-				);
-			})();
+			values = [
+				((sensorData.gps.latitude + 90) / 180) * GRAPH_HEIGHT,
+				((sensorData.gps.longitude + 180) / 360) * GRAPH_HEIGHT,
+			];
 		}
-		setSubscription(sub);
-		return () => {
-			isMounted = false;
-			if (sub) sub.remove();
-			if (locationWatcher) locationWatcher.remove();
-		};
-	}, [sensor]);
+		setData(prev => prev.map((arr, i) => {
+			const newArr = arr.slice(1);
+			newArr.push(values[i] ?? 0);
+			return newArr;
+		}));
+	}, [sensorData, sensor]);
 
 	// Create paths for each dimension
 	const paths = [];
@@ -142,32 +110,32 @@ export default function GraphCard({ title = "Text: ", sensor = "accelerometer" }
 		);
 	}
 
-  return (
-    <View style={{ padding: 25 / 2, backgroundColor: "white", borderRadius: 25, height: 100, overflow: "hidden", marginBottom: 15, flexDirection: "row" }}>
-      <Text style={{ fontWeight: "bold", fontSize: 40, textAlignVertical: "center", width: 100, flexDirection: "row" }}>{title}</Text>
-      <View style={{ backgroundColor: "lightgray", flex: 1 }}>
-        <View style={{ backgroundColor: "#ffffff", justifyContent: "center" }}>
-			<ScrollView horizontal showsHorizontalScrollIndicator={true}>
-				<ScrollView
-					horizontal
-					showsHorizontalScrollIndicator={true}
-					ref={scrollViewRef}
-					onContentSizeChange={() => {
-						if (scrollViewRef.current) {
-							scrollViewRef.current.scrollToEnd({ animated: false });
-						}
-					}}
-				>
-				<Canvas style={{ width: GRAPH_WIDTH, height: GRAPH_HEIGHT }}>
-					{gridPaths}
-					{paths.map((p, i) => (
-						<Path key={i} path={p} color={config.colors[i]} strokeWidth={2} style="stroke" />
-					))}
-				</Canvas>
-				</ScrollView>
-			</ScrollView>
-        </View>
-      </View>
-    </View>
-  )
+	return (
+		<View style={{ padding: 25 / 2, backgroundColor: "white", borderRadius: 25, height: 100, overflow: "hidden", marginBottom: 15, flexDirection: "row" }}>
+			<Text style={{ fontWeight: "bold", fontSize: 40, textAlignVertical: "center", width: 100, flexDirection: "row" }}>{title}</Text>
+			<View style={{ backgroundColor: "lightgray", flex: 1 }}>
+				<View style={{ backgroundColor: "#ffffff", justifyContent: "center" }}>
+					<ScrollView horizontal showsHorizontalScrollIndicator={true}>
+						<ScrollView
+							horizontal
+							showsHorizontalScrollIndicator={true}
+							ref={scrollViewRef}
+							onContentSizeChange={() => {
+								if (scrollViewRef.current) {
+									scrollViewRef.current.scrollToEnd({ animated: false });
+								}
+							}}
+						>
+							<Canvas style={{ width: GRAPH_WIDTH, height: GRAPH_HEIGHT }}>
+								{gridPaths}
+								{paths.map((p, i) => (
+									<Path key={i} path={p} color={config.colors[i]} strokeWidth={2} style="stroke" />
+								))}
+							</Canvas>
+						</ScrollView>
+					</ScrollView>
+				</View>
+			</View>
+		</View>
+	);
 }
