@@ -1,39 +1,122 @@
 import { Accelerometer, Gyroscope, Magnetometer, Barometer } from 'expo-sensors';
 import * as Location from 'expo-location';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
+import SensorUpload from './SensorUpload';
+
+const DATA_LENGTH = 500;
 
 export function useSensorData() {
-  const [sensorData, setSensorData] = useState({
-    gps: { latitude: null, longitude: null },
-    accelerometer: { x: null, y: null, z: null },
-    gyroscope: { x: null, y: null, z: null },
-    barometer: { pressure: null },
-    magnetometer: { x: null, y: null, z: null },
+  const [sensorState, setSensorState] = useState({
+    data: {
+      gps: { latitude: 0, longitude: 0 },
+      accelerometer: { x: 0, y: 0, z: 0 },
+      gyroscope: { x: 0, y: 0, z: 0 },
+      barometer: { pressure: 0 },
+      magnetometer: { x: 0, y: 0, z: 0 },
+    },
+    history: {
+      gps: Array(2).fill().map(() => Array(DATA_LENGTH).fill(0)),
+      accelerometer: Array(3).fill().map(() => Array(DATA_LENGTH).fill(0)),
+      gyroscope: Array(3).fill().map(() => Array(DATA_LENGTH).fill(0)),
+      barometer: Array(1).fill().map(() => Array(DATA_LENGTH).fill(0)),
+      magnetometer: Array(3).fill().map(() => Array(DATA_LENGTH).fill(0)),
+    },
+    tick: 0,
   });
+
+  const latestData = useRef(sensorState.data);
+  const currentHistory = useRef(sensorState.history);
 
   useEffect(() => {
     let accelSub, gyroSub, magSub, baroSub, locationWatcher;
-    accelSub = Accelerometer.addListener(data => setSensorData(prev => ({ ...prev, accelerometer: data })));
-    gyroSub = Gyroscope.addListener(data => setSensorData(prev => ({ ...prev, gyroscope: data })));
-    magSub = Magnetometer.addListener(data => setSensorData(prev => ({ ...prev, magnetometer: data })));
-    baroSub = Barometer.addListener(data => setSensorData(prev => ({ ...prev, barometer: { pressure: data.pressure } })));
+
+    Accelerometer.setUpdateInterval(5); // 200 Hz
+    Gyroscope.setUpdateInterval(5); // 200 Hz
+    Magnetometer.setUpdateInterval(1000); // 1 Hz
+    Barometer.setUpdateInterval(1000); // 1 Hz
+
+    accelSub = Accelerometer.addListener(data => { latestData.current.accelerometer = data; });
+    gyroSub = Gyroscope.addListener(data => { latestData.current.gyroscope = data; });
+    magSub = Magnetometer.addListener(data => { latestData.current.magnetometer = data; });
+    baroSub = Barometer.addListener(data => { latestData.current.barometer = { pressure: data.pressure }; });
+
     (async () => {
       let { status } = await Location.requestForegroundPermissionsAsync();
       if (status === 'granted') {
         locationWatcher = await Location.watchPositionAsync(
           { accuracy: Location.Accuracy.Highest, timeInterval: 1000, distanceInterval: 0 },
-          loc => setSensorData(prev => ({ ...prev, gps: { latitude: loc.coords.latitude, longitude: loc.coords.longitude } }))
+          loc => { latestData.current.gps = { latitude: loc.coords.latitude, longitude: loc.coords.longitude }; }
         );
       }
     })();
+
+    // Start auto upload for sensor data
+    SensorUpload.startAutoUpload();
+
+    const tick = setInterval(() => {
+      const nextData = { ...latestData.current };
+      const nextHistory = { ...currentHistory.current };
+      const GRAPH_HEIGHT = 100;
+
+      const updateHist = (key, values) => {
+        nextHistory[key] = nextHistory[key].map((arr, i) => {
+          const newArr = arr.slice(1);
+          newArr.push(values[i] ?? 0);
+          return newArr;
+        });
+      };
+
+      updateHist('accelerometer', [
+        ((nextData.accelerometer.x + 2) / 4) * GRAPH_HEIGHT,
+        ((nextData.accelerometer.y + 2) / 4) * GRAPH_HEIGHT,
+        ((nextData.accelerometer.z + 2) / 4) * GRAPH_HEIGHT,
+      ]);
+
+      updateHist('gyroscope', [
+        ((nextData.gyroscope.x + 8) / 16) * GRAPH_HEIGHT,
+        ((nextData.gyroscope.y + 8) / 16) * GRAPH_HEIGHT,
+        ((nextData.gyroscope.z + 8) / 16) * GRAPH_HEIGHT,
+      ]);
+
+      updateHist('magnetometer', [
+        ((nextData.magnetometer.x + 100) / 200) * GRAPH_HEIGHT,
+        ((nextData.magnetometer.y + 100) / 200) * GRAPH_HEIGHT,
+        ((nextData.magnetometer.z + 100) / 200) * GRAPH_HEIGHT,
+      ]);
+
+      updateHist('barometer', [(nextData.barometer.pressure / 1100) * GRAPH_HEIGHT]);
+
+      updateHist('gps', [
+        ((nextData.gps.latitude + 90) / 180) * GRAPH_HEIGHT,
+        ((nextData.gps.longitude + 180) / 360) * GRAPH_HEIGHT,
+      ]);
+
+      currentHistory.current = nextHistory;
+
+      // Add batched data with a timestamp
+      SensorUpload.addData({
+        timestamp: new Date().toISOString(),
+        ...nextData
+      });
+
+      setSensorState(prev => ({
+        data: nextData,
+        history: nextHistory,
+        tick: prev.tick + 1
+      }));
+    }, 32);
+
     return () => {
       accelSub && accelSub.remove();
       gyroSub && gyroSub.remove();
       magSub && magSub.remove();
       baroSub && baroSub.remove();
       locationWatcher && locationWatcher.remove();
+      clearInterval(tick);
+      SensorUpload.stopAutoUpload();
     };
   }, []);
 
-  return sensorData;
+  return sensorState;
 }
+

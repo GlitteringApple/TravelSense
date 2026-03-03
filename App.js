@@ -18,13 +18,14 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import ButtonRound from "./components/ButtonRound"
 import GraphCard from './components/GraphCard';
+import { useSensorData } from './src/sensors/Sensor';
 const mapImg = require("./assets/carte-geographique-du-monde.jpg");
 import {
   NavigationContainer,
   createStaticNavigation,
   useNavigation,
 } from '@react-navigation/native';
-import { createBottomTabNavigator, useBottomTabBarHeight  } from '@react-navigation/bottom-tabs';
+import { createBottomTabNavigator, useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { useEffect, useRef, useState } from 'react';
 import Animated, {
   useSharedValue,
@@ -105,7 +106,7 @@ function HomeScreen() {
     return () => {
       keybHidden.remove();
     };
-  });
+  }, [isSearchBarFocused]);
 
   //Smoothly animates expansion and collapse from 0 to 1.
   const toggleSearch = () => {
@@ -161,12 +162,15 @@ function HomeScreen() {
 
   //Fullscreen component
   const navigation = useNavigation();
-  navigation.addListener('drawerClose', () => {
-    onRunFunction('light-content');
-  });
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('drawerClose', () => {
+      onRunFunction('light-content');
+    });
+    return unsubscribe;
+  }, [navigation]);
   return (
     <View style={styles.fullscreen}>
-      <MapView provider={PROVIDER_GOOGLE} style={StyleSheet.absoluteFillObject}/>
+      <MapView provider={PROVIDER_GOOGLE} style={StyleSheet.absoluteFillObject} />
       <StatusBar translucent backgroundColor="transparent" barStyle={barStyle} />
       {/* <ImageBackground source={mapImg} style={{ flex: 1 }}> */}
       <View style={{ flex: 1 }}>
@@ -203,9 +207,9 @@ function HomeScreen() {
 function DataScreen() {
   const padding = 15;
   const tabBarHeight = useBottomTabBarHeight();
-  console.log(tabBarHeight)
+  const sensorState = useSensorData();
   return (
-    <View style={[styles.screen, {padding: padding}]}>
+    <View style={[styles.screen, { padding: padding }]}>
       <View style={{ backgroundColor: '#ffffff', borderRadius: 25, height: 150, overflow: 'hidden' }}>
         <View style={{ backgroundColor: 'lime', flexDirection: 'row' }}>
           <Text style={{ color: 'white', fontWeight: 'bold', left: 12.5, fontSize: 17.5 }}>STATUS: TRAVELLING</Text>
@@ -219,13 +223,13 @@ function DataScreen() {
         </View>
 
         <View style={{ backgroundColor: "white", flex: 1, padding: padding }}>
-          <View style={{flexDirection: "row" }}>
+          <View style={{ flexDirection: "row" }}>
             <Text style={{ fontSize: 60, fontWeight: "bold", includeFontPadding: false, lineHeight: 50 }}>60</Text>
             <Text style={{ textAlignVertical: "bottom", bottom: 0, marginLeft: 3 }}>km/h</Text>
             <View style={{ flex: 1, flexDirection: "row", alignItems: "center", marginLeft: 5 }}>
               <View>
-              <Text>RECORDING: </Text>
-              <Text>05:13:45</Text>
+                <Text>RECORDING: </Text>
+                <Text>05:13:45</Text>
               </View>
               <View style={{ flex: 1, flexDirection: "row", justifyContent: "space-evenly" }}>
                 <ButtonRound size={30}>
@@ -241,21 +245,21 @@ function DataScreen() {
             </View>
           </View>
           <View style={{ flexDirection: "row", alignItems: "center", bottom: padding, left: padding, position: "absolute" }}>
-            <Text style={{position: "relative"}}>CONFIDENCE:</Text>
+            <Text style={{ position: "relative" }}>CONFIDENCE:</Text>
             <Progress.Bar progress={1} animated={false} width={null} borderRadius={0} borderWidth={0} color={"red"} unfilledColor={"pink"} style={{ alignSelf: "center", flex: 1, marginLeft: 10 }} />
-            <Progress.Bar progress={1} animated={false} width={null} borderRadius={0} borderWidth={0} color={"gold"} unfilledColor={"lightgoldenrodyellow"} style={{ alignSelf: "center", flex: 1}} />
-            <Progress.Bar progress={0.5} animated={false} width={null} borderRadius={0} borderWidth={0} color={"green"} unfilledColor={"lightgreen"} style={{ alignSelf: "center", flex: 1}} />
+            <Progress.Bar progress={1} animated={false} width={null} borderRadius={0} borderWidth={0} color={"gold"} unfilledColor={"lightgoldenrodyellow"} style={{ alignSelf: "center", flex: 1 }} />
+            <Progress.Bar progress={0.5} animated={false} width={null} borderRadius={0} borderWidth={0} color={"green"} unfilledColor={"lightgreen"} style={{ alignSelf: "center", flex: 1 }} />
           </View>
         </View>
       </View>
-        <Text style={{fontWeight: "bold", fontSize: 20, padding: 10 }}>Sensors used: </Text>
-        <ScrollView style={{borderRadius: 25}}>
-          <GraphCard title="GPS: " sensor="gps"/>
-          <GraphCard title="Accl: " sensor="accelerometer"/>
-          <GraphCard title="Gyro: " sensor="gyroscope"/>
-          <GraphCard title="Baro: " sensor="barometer"/>
-          <GraphCard title="Mag:" sensor="magnetometer"/>
-          </ScrollView>
+      <Text style={{ fontWeight: "bold", fontSize: 20, padding: 10 }}>Sensors used: </Text>
+      <ScrollView style={{ borderRadius: 25 }}>
+        <GraphCard title="GPS: " sensor="gps" sensorState={sensorState} />
+        <GraphCard title="Accl: " sensor="accelerometer" sensorState={sensorState} />
+        <GraphCard title="Gyro: " sensor="gyroscope" sensorState={sensorState} />
+        <GraphCard title="Baro: " sensor="barometer" sensorState={sensorState} />
+        <GraphCard title="Mag:" sensor="magnetometer" sensorState={sensorState} />
+      </ScrollView>
     </View>
   );
 }
