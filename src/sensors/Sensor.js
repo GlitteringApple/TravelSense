@@ -8,7 +8,7 @@ const DATA_LENGTH = 500;
 export function useSensorData() {
   const [sensorState, setSensorState] = useState({
     data: {
-      gps: { latitude: 0, longitude: 0 },
+      gps: { latitude: 0, longitude: 0, speed: 0 },
       accelerometer: { x: 0, y: 0, z: 0 },
       gyroscope: { x: 0, y: 0, z: 0 },
       barometer: { pressure: 0 },
@@ -44,17 +44,43 @@ export function useSensorData() {
       let { status } = await Location.requestForegroundPermissionsAsync();
       if (status === 'granted') {
         locationWatcher = await Location.watchPositionAsync(
-          { accuracy: Location.Accuracy.Highest, timeInterval: 1000, distanceInterval: 0 },
-          loc => { latestData.current.gps = { latitude: loc.coords.latitude, longitude: loc.coords.longitude }; }
+          { accuracy: Location.Accuracy.Balanced, timeInterval: 1000, distanceInterval: 0 },
+          loc => {
+            latestData.current.gps = {
+              latitude: loc.coords.latitude,
+              longitude: loc.coords.longitude,
+              speed: loc.coords.speed ? loc.coords.speed * 3.6 : 0 // Convert m/s to km/h
+            };
+          }
         );
       }
     })();
 
     // Start auto upload for sensor data
-    SensorUpload.startAutoUpload();
+    //SensorUpload.startAutoUpload();
+
+    // Gravity alignment variables (Low Pass Filter)
+    const gravity = { x: 0, y: 0, z: 0 }; // Initialize to zero to let it learn baseline
+    const alpha = 0.1; // Filter responsiveness
 
     const tick = setInterval(() => {
       const nextData = { ...latestData.current };
+
+      // DEBUG: Log the first few raw accel values to console (optional)
+      // if (prev.tick % 100 === 0) console.log('Raw Accel:', nextData.accelerometer);
+
+      // Gravity Alignment (Separating Gravity from Linear Acceleration)
+      gravity.x = alpha * nextData.accelerometer.x + (1 - alpha) * gravity.x;
+      gravity.y = alpha * nextData.accelerometer.y + (1 - alpha) * gravity.y;
+      gravity.z = alpha * nextData.accelerometer.z + (1 - alpha) * gravity.z;
+
+      // Linear acceleration (Gravity-Aligned jerk data)
+      const linearAccel = {
+        x: nextData.accelerometer.x - gravity.x,
+        y: nextData.accelerometer.y - gravity.y,
+        z: nextData.accelerometer.z - gravity.z,
+      };
+
       const nextHistory = { ...currentHistory.current };
       const GRAPH_HEIGHT = 100;
 
@@ -67,9 +93,9 @@ export function useSensorData() {
       };
 
       updateHist('accelerometer', [
-        ((nextData.accelerometer.x + 2) / 4) * GRAPH_HEIGHT,
-        ((nextData.accelerometer.y + 2) / 4) * GRAPH_HEIGHT,
-        ((nextData.accelerometer.z + 2) / 4) * GRAPH_HEIGHT,
+        ((linearAccel.x + 2) / 4) * GRAPH_HEIGHT,
+        ((linearAccel.y + 2) / 4) * GRAPH_HEIGHT,
+        ((linearAccel.z + 2) / 4) * GRAPH_HEIGHT,
       ]);
 
       updateHist('gyroscope', [
@@ -93,14 +119,15 @@ export function useSensorData() {
 
       currentHistory.current = nextHistory;
 
-      // Add batched data with a timestamp
+      // Add batched data (using gravity-aligned linear acceleration)
       SensorUpload.addData({
         timestamp: new Date().toISOString(),
-        ...nextData
+        ...nextData,
+        accelerometer: linearAccel // Pothole detection is best with linear accel
       });
 
       setSensorState(prev => ({
-        data: nextData,
+        data: { ...nextData, accelerometer: linearAccel },
         history: nextHistory,
         tick: prev.tick + 1
       }));

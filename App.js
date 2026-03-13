@@ -204,10 +204,79 @@ function HomeScreen() {
   );
 }
 
+import SensorUpload from './src/sensors/SensorUpload';
+
 function DataScreen() {
   const padding = 15;
   const tabBarHeight = useBottomTabBarHeight();
   const sensorState = useSensorData();
+  const { isDarkMode, colorTheme } = 0;
+  const [isUploading, setIsUploading] = useState(false);
+  const [elapsedTime, setElapsedTime] = useState(0);
+  const [localPotholes, setLocalPotholes] = useState([]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setElapsedTime(prev => prev + 1);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const formatTime = (seconds) => {
+    const hrs = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const themeColors = {
+    background: isDarkMode ? '#121212' : '#f5f5f5',
+    card: isDarkMode ? '#1e1e1e' : '#ffffff',
+    text: isDarkMode ? '#ffffff' : '#000000',
+  };
+
+  const handleFlushData = async () => {
+    setIsUploading(true);
+    try {
+      await SensorUpload.uploadData('traveler-1');
+      Alert.alert('Success', 'Last 5 mins of sensor data flushed to database.');
+    } catch (error) {
+      Alert.alert('Upload Failed', error.message || 'Check your server connection');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    try {
+      const res = await SensorUpload.testConnection();
+      Alert.alert('DB Connected!', `Server time: ${res.time}`);
+    } catch (error) {
+      Alert.alert('DB Error', error.message || 'Server check failed');
+    }
+  };
+
+  const handleFetchPotholes = async () => {
+    try {
+      const data = await SensorUpload.fetchPotholes();
+      setLocalPotholes(data);
+      Alert.alert('Sync Complete', `Stored ${data.length} potholes locally.`);
+    } catch (error) {
+      Alert.alert('Sync Error', error.message);
+    }
+  };
+
+  const handleTriggerProcessing = async () => {
+    try {
+      const result = await SensorUpload.triggerProcessing(0.5);
+      Alert.alert('Processing Complete', `Found ${result.potholes_found} potholes from ${result.processed} records.`);
+    } catch (error) {
+      Alert.alert('Processing Error', error.message);
+    }
+  };
+
+  const currentSpeed = Math.round(sensorState.data.gps.speed || 0);
+
   return (
     <View style={[styles.screen, { padding: padding }]}>
       <View style={{ backgroundColor: '#ffffff', borderRadius: 25, height: 150, overflow: 'hidden' }}>
@@ -224,22 +293,32 @@ function DataScreen() {
 
         <View style={{ backgroundColor: "white", flex: 1, padding: padding }}>
           <View style={{ flexDirection: "row" }}>
-            <Text style={{ fontSize: 60, fontWeight: "bold", includeFontPadding: false, lineHeight: 50 }}>60</Text>
-            <Text style={{ textAlignVertical: "bottom", bottom: 0, marginLeft: 3 }}>km/h</Text>
+            <Text style={{ color: themeColors.text, fontSize: 60, fontWeight: "bold", includeFontPadding: false, lineHeight: 50 }}>{currentSpeed}</Text>
+            <Text style={{ color: themeColors.text, textAlignVertical: "bottom", bottom: 0, marginLeft: 3 }}>km/h</Text>
             <View style={{ flex: 1, flexDirection: "row", alignItems: "center", marginLeft: 5 }}>
               <View>
-                <Text>RECORDING: </Text>
-                <Text>05:13:45</Text>
+                <Text style={{ color: themeColors.text }}>RECORDING: </Text>
+                <Text style={{ color: themeColors.text }}>{formatTime(elapsedTime)}</Text>
               </View>
               <View style={{ flex: 1, flexDirection: "row", justifyContent: "space-evenly" }}>
-                <ButtonRound size={30}>
-                  <FontAwesome5 name="pause" size={15} color="black" />
+                <ButtonRound size={30} onPress={() => { }}>
+                  <FontAwesome5 name="pause" size={15} color={isDarkMode ? 'white' : 'black'} />
                 </ButtonRound>
-                <ButtonRound size={30}>
-                  <FontAwesome5 name="stop" size={15} color="black" />
+                <ButtonRound size={30} onPress={handleTestConnection}>
+                  <MaterialIcons name="storage" size={15} color={isDarkMode ? 'white' : 'black'} />
                 </ButtonRound>
-                <ButtonRound size={30}>
-                  <Feather name="x" size={15} color="black" />
+                <ButtonRound size={30} onPress={handleFetchPotholes}>
+                  <FontAwesome5 name="map-marker-alt" size={15} color={isDarkMode ? 'white' : 'black'} />
+                </ButtonRound>
+                <ButtonRound size={30} onPress={handleTriggerProcessing}>
+                  <MaterialIcons name="analytics" size={15} color={isDarkMode ? 'white' : 'black'} />
+                </ButtonRound>
+                <ButtonRound size={30} onPress={handleFlushData} disabled={isUploading}>
+                  {isUploading ? (
+                    <ActivityIndicator size="small" color={isDarkMode ? 'white' : 'black'} />
+                  ) : (
+                    <FontAwesome5 name="upload" size={15} color={isDarkMode ? 'white' : 'black'} />
+                  )}
                 </ButtonRound>
               </View>
             </View>

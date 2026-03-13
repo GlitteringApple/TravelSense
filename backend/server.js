@@ -2,10 +2,11 @@ require('dotenv').config();
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
+const { processPotholeData } = require('./processData');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
 
 const pool = new Pool({
   user: process.env.DB_USER,
@@ -15,12 +16,31 @@ const pool = new Pool({
   port: process.env.DB_PORT,
 });
 
+// Test database connection
+app.get('/test-db', async (req, res) => {
+  let client;
+  try {
+    client = await pool.connect();
+    const result = await client.query('SELECT NOW()');
+    res.json({ success: true, time: result.rows[0].now });
+  } catch (e) {
+    console.error('Test DB Connection Error:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  } finally {
+    if (client) client.release();
+  }
+});
+
 // Accept sensor data in double precision format, only when manually called
 app.post('/upload-sensor-data', async (req, res) => {
   const { deviceId, data } = req.body;
-  // data: [{ timestamp, gps_latitude, gps_longitude, accelerometer_x, ... }]
-  const client = await pool.connect();
+  if (!data || !Array.isArray(data)) {
+    return res.status(400).json({ error: 'Data must be an array' });
+  }
+
+  let client;
   try {
+    client = await pool.connect();
     await client.query('BEGIN');
     for (const row of data) {
       await client.query(
@@ -51,12 +71,41 @@ app.post('/upload-sensor-data', async (req, res) => {
       );
     }
     await client.query('COMMIT');
+    console.log(`Successfully inserted ${data.length} records for device ${deviceId}`);
     res.sendStatus(200);
   } catch (e) {
-    await client.query('ROLLBACK');
+    if (client) await client.query('ROLLBACK');
+    console.error('Database Error:', e.message);
     res.status(500).json({ error: e.message });
   } finally {
-    client.release();
+    if (client) client.release();
+  }
+});
+
+// Process raw sensor data to extract potholes
+app.post('/process-data', async (req, res) => {
+  try {
+    const sensitivity = req.body.sensitivity ? parseFloat(req.body.sensitivity) : 0.5;
+    const result = await processPotholeData(pool, sensitivity);
+    res.json(result);
+  } catch (e) {
+    console.error('Data Processing Error:', e.message);
+    res.status(500).json({ error: 'Failed to process data' });
+  }
+});
+
+// Get identified potholes
+app.get('/potholes', async (req, res) => {
+  let client;
+  try {
+    client = await pool.connect();
+    const { rows } = await client.query('SELECT * FROM potholes ORDER BY timestamp DESC LIMIT 100');
+    res.json(rows);
+  } catch (e) {
+    console.error('Fetch Potholes Error:', e.message);
+    res.status(500).json({ error: 'Failed to fetch pothole data' });
+  } finally {
+    if (client) client.release();
   }
 });
 
