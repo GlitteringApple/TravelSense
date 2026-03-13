@@ -1,13 +1,31 @@
-import { View, Text, Image, ImageBackground, ScrollView, Button, TextInput, StyleSheet, Pressable, StatusBar, ActivityIndicator, Alert, Dimensions, Keyboard } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import {
+  View,
+  Text,
+  Image,
+  ImageBackground,
+  ScrollView,
+  Button,
+  TextInput,
+  StyleSheet,
+  Pressable,
+  StatusBar,
+  ActivityIndicator,
+  Alert,
+  Dimensions,
+  Keyboard,
+  BackHandler
+} from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import ButtonRound from "./components/ButtonRound"
+import GraphCard from './components/GraphCard';
+import { useSensorData } from './src/sensors/Sensor';
 const mapImg = require("./assets/carte-geographique-du-monde.jpg");
 import {
   NavigationContainer,
   createStaticNavigation,
   useNavigation,
 } from '@react-navigation/native';
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { createBottomTabNavigator, useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { useEffect, useRef, useState } from 'react';
 import Animated, {
   useSharedValue,
@@ -21,12 +39,26 @@ import {
   DrawerContentScrollView,
   DrawerItem,
 } from '@react-navigation/drawer';
+import Svg, { Polygon } from 'react-native-svg';
+import * as Progress from 'react-native-progress';
+import MapView, { PROVIDER_GOOGLE } from 'react-native-maps';
+import { Accelerometer, Gyroscope } from "expo-sensors";
+import {
+  Canvas,
+  Path,
+  Skia,
+  Group,
+  useDerivedValue,
+} from "@shopify/react-native-skia";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
 
 //Icons
 import Entypo from '@expo/vector-icons/Entypo';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import AntDesign from '@expo/vector-icons/AntDesign';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import Feather from '@expo/vector-icons/Feather';
+import FontAwesome5 from '@expo/vector-icons/FontAwesome5';
 
 /* ------------------ Screens ------------------ */
 
@@ -35,9 +67,9 @@ const Stack = createNativeStackNavigator();
 function DrawerStack() {
   return (
     <Stack.Navigator screenOptions={{
-      animation: 'slide_from_right', headerShown: true
+      animation: 'default', headerShown: true
     }}>
-      <Stack.Screen name="Home" component={Tabs} options={{headerShown: false}}/>
+      <Stack.Screen name="Home" component={Tabs} options={{ headerShown: false }} />
       <Stack.Screen name="Settings" component={SettingsScreen} />
       <Stack.Screen name="About Us" component={AboutUsScreen} />
     </Stack.Navigator>
@@ -74,7 +106,7 @@ function HomeScreen() {
     return () => {
       keybHidden.remove();
     };
-  });
+  }, [isSearchBarFocused]);
 
   //Smoothly animates expansion and collapse from 0 to 1.
   const toggleSearch = () => {
@@ -130,13 +162,18 @@ function HomeScreen() {
 
   //Fullscreen component
   const navigation = useNavigation();
-  navigation.addListener('drawerClose', () => {
-    onRunFunction('light-content');
-  });
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('drawerClose', () => {
+      onRunFunction('light-content');
+    });
+    return unsubscribe;
+  }, [navigation]);
   return (
-    <View style={styles.screen}>
+    <View style={styles.fullscreen}>
+      <MapView provider={PROVIDER_GOOGLE} style={StyleSheet.absoluteFillObject} />
       <StatusBar translucent backgroundColor="transparent" barStyle={barStyle} />
-      <ImageBackground source={mapImg} style={{ flex: 1 }}>
+      {/* <ImageBackground source={mapImg} style={{ flex: 1 }}> */}
+      <View style={{ flex: 1 }}>
         <SafeAreaView style={styles.wrapper} onLayout={onLayout}>
 
           <ButtonRound onPress={() => {
@@ -162,21 +199,77 @@ function HomeScreen() {
           </ButtonRound>
 
         </SafeAreaView>
-      </ImageBackground>
+      </View>
     </View>
   );
 }
 
 function DataScreen() {
+  const padding = 15;
+  const tabBarHeight = useBottomTabBarHeight();
+  const sensorState = useSensorData();
   return (
-    <View>
-      <Text>This is the data screen.</Text>
+    <View style={[styles.screen, { padding: padding }]}>
+      <View style={{ backgroundColor: '#ffffff', borderRadius: 25, height: 150, overflow: 'hidden' }}>
+        <View style={{ backgroundColor: 'lime', flexDirection: 'row' }}>
+          <Text style={{ color: 'white', fontWeight: 'bold', left: 12.5, fontSize: 17.5 }}>STATUS: TRAVELLING</Text>
+          <Svg height="23" width="100%" viewBox="0 0 20 2">
+            <Polygon
+              points="0,0 15,0 15,15 20,20"
+              fill="green"
+            />
+          </Svg>
+          <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 17.5, position: "absolute", right: 25 }}>AUTO: ON</Text>
+        </View>
+
+        <View style={{ backgroundColor: "white", flex: 1, padding: padding }}>
+          <View style={{ flexDirection: "row" }}>
+            <Text style={{ fontSize: 60, fontWeight: "bold", includeFontPadding: false, lineHeight: 50 }}>60</Text>
+            <Text style={{ textAlignVertical: "bottom", bottom: 0, marginLeft: 3 }}>km/h</Text>
+            <View style={{ flex: 1, flexDirection: "row", alignItems: "center", marginLeft: 5 }}>
+              <View>
+                <Text>RECORDING: </Text>
+                <Text>05:13:45</Text>
+              </View>
+              <View style={{ flex: 1, flexDirection: "row", justifyContent: "space-evenly" }}>
+                <ButtonRound size={30}>
+                  <FontAwesome5 name="pause" size={15} color="black" />
+                </ButtonRound>
+                <ButtonRound size={30}>
+                  <FontAwesome5 name="stop" size={15} color="black" />
+                </ButtonRound>
+                <ButtonRound size={30}>
+                  <Feather name="x" size={15} color="black" />
+                </ButtonRound>
+              </View>
+            </View>
+          </View>
+          <View style={{ flexDirection: "row", alignItems: "center", bottom: padding, left: padding, position: "absolute" }}>
+            <Text style={{ position: "relative" }}>CONFIDENCE:</Text>
+            <Progress.Bar progress={1} animated={false} width={null} borderRadius={0} borderWidth={0} color={"red"} unfilledColor={"pink"} style={{ alignSelf: "center", flex: 1, marginLeft: 10 }} />
+            <Progress.Bar progress={1} animated={false} width={null} borderRadius={0} borderWidth={0} color={"gold"} unfilledColor={"lightgoldenrodyellow"} style={{ alignSelf: "center", flex: 1 }} />
+            <Progress.Bar progress={0.5} animated={false} width={null} borderRadius={0} borderWidth={0} color={"green"} unfilledColor={"lightgreen"} style={{ alignSelf: "center", flex: 1 }} />
+          </View>
+        </View>
+      </View>
+      <Text style={{ fontWeight: "bold", fontSize: 20, padding: 10 }}>Sensors used: </Text>
+      <ScrollView style={{ borderRadius: 25 }}>
+        <GraphCard title="GPS: " sensor="gps" sensorState={sensorState} />
+        <GraphCard title="Accl: " sensor="accelerometer" sensorState={sensorState} />
+        <GraphCard title="Gyro: " sensor="gyroscope" sensorState={sensorState} />
+        <GraphCard title="Baro: " sensor="barometer" sensorState={sensorState} />
+        <GraphCard title="Mag:" sensor="magnetometer" sensorState={sensorState} />
+      </ScrollView>
     </View>
   );
 }
 
-function JournalScreen() {
-  return null;
+function TravelogueScreen() {
+  return (
+    <View>
+      <Text>This is the travelogue screen.</Text>
+    </View>
+  );
 }
 
 function SettingsScreen() {
@@ -204,19 +297,20 @@ const Empty = () => <View />;
 
 function Tabs() {
 
-  const onPressJournal = () => {
-    console.log('Journal button pressed');
+  const onPressTravelogue = () => {
+    console.log('Travelogue button pressed');
   };
 
   return (
-    <Tab.Navigator screenOptions={{ headerShown: false }}>
+    <Tab.Navigator screenOptions={{ animation: 'shift', headerShown: true }}>
       <Tab.Screen
         name="Home"
         component={HomeScreen}
         options={{
           tabBarIcon: ({ color, size }) => (
             <AntDesign name="home" size={24} color="black" />
-          )
+          ),
+          headerShown: false
         }} />
       <Tab.Screen
         name="My Data"
@@ -227,14 +321,14 @@ function Tabs() {
           )
         }} />
       <Tab.Screen
-        name="Journal"
-        component={Empty}
-        listeners={{
-          tabPress: e => {
-            e.preventDefault();
-            onPressJournal();
-          }
-        }}
+        name="Travelogue"
+        component={TravelogueScreen}
+        // listeners={{
+        //   tabPress: e => {
+        //     e.preventDefault();
+        //     onPressTravelogue();
+        //   }
+        // }}
         options={{
           tabBarIcon: ({ color, size }) => (
             <AntDesign name="book" size={24} color="black" />
@@ -247,6 +341,7 @@ function Tabs() {
 /* ------------------ Custom Drawer ------------------ */
 
 function CustomDrawerContent(props) {
+  const { state, navigation } = props;
   return (
     <DrawerContentScrollView {...props}>
       <View style={styles.logoContainer}>
@@ -260,18 +355,31 @@ function CustomDrawerContent(props) {
 
       <DrawerItem
         label="Home"
+        focused={state.index === 0}
+        activeTintColor="white"
+        inactiveTintColor="gray"
+        activeBackgroundColor="#003CB3"
         icon={({ color, size }) => (<AntDesign name="home" size={24} color="black" />)}
-        onPress={() => props.navigation.navigate('Main', {screen: 'HomeScreen'})}
+        //onPress={() => props.navigation.navigate('Main', { screen: 'HomeScreen' })}
+        onPress={() => props.navigation.navigate('Main', { screen: 'HomeScreen' })}
       />
       <DrawerItem
         label="Settings"
+        focused={state.index === 1}
+        activeTintColor="white"
+        inactiveTintColor="gray"
+        activeBackgroundColor="#003CB3"
         icon={({ color, size }) => (<AntDesign name="setting" size={24} color="black" />)}
-        onPress={() => props.navigation.navigate('Main', {screen: 'Settings'})}
+        onPress={() => props.navigation.navigate('Main', { screen: 'Settings' })}
       />
       <DrawerItem
         label="About Us"
+        focused={state.index === 2}
+        activeTintColor="white"
+        inactiveTintColor="gray"
+        activeBackgroundColor="#003CB3"
         icon={({ color, size }) => (<AntDesign name="question-circle" size={24} color="black" />)}
-        onPress={() => props.navigation.navigate('Main', {screen: 'About Us'})}
+        onPress={() => props.navigation.navigate('Main', { screen: 'About Us' })}
       />
     </DrawerContentScrollView>
   );
@@ -283,12 +391,37 @@ const Drawer = createDrawerNavigator();
 
 export default function App({ navigation }) {
 
+  useEffect(() => {
+    const backAction = () => {
+      if (navigation.canGoBack()) {
+        return false;
+      }
+
+      Alert.alert(
+        'Exit TravelSense',
+        'Are you sure you want to exit?',
+        [
+          { text: 'Not really', style: 'cancel' },
+          { text: 'Yes', onPress: () => BackHandler.exitApp() },
+        ]
+      );
+      return true; // prevent default behavior
+    };
+
+    const backHandler = BackHandler.addEventListener(
+      'hardwareBackPress',
+      backAction
+    );
+
+    return () => backHandler.remove();
+  }, []);
+
   return (
     <NavigationContainer>
       <Drawer.Navigator
         drawerContent={(props) => <CustomDrawerContent {...props} />}
         screenOptions={{
-          headerShown: false,
+          headerShown: false, drawerType: "front", detachInactiveScreens: false,
         }}
       >
         <Drawer.Screen name="Main" component={DrawerStack}></Drawer.Screen>
@@ -298,9 +431,13 @@ export default function App({ navigation }) {
 }
 
 const styles = StyleSheet.create({
-  screen: {
+  fullscreen: {
     flex: 1,
     backgroundColor: "black",
+  },
+  screen: {
+    padding: 15,
+    flex: 1,
   },
   wrapper: {
     width: "100%",
@@ -337,7 +474,7 @@ const styles = StyleSheet.create({
     height: 50,
   },
   inputWrapper: {
-    flex: 1,
+    flex: 0,
   },
   input: {
     color: "gray",
