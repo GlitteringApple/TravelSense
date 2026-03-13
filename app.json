@@ -16,28 +16,14 @@
       "supportsTablet": true
     },
     "android": {
-      "permissions": [
-        "HIGH_SAMPLING_RATE_SENSORS"
-      ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true,
-      "config": {
-        "googleMaps": {
-          "apiKey": "process.env.GOOGLE_MAPS_API_KEY"
-        }
-      },
-      "package": "com.travelsense.TravelSense"
+      "edgeToEdgeEnabled": true
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    },
-    "extra": {
-      "eas": {
-        "projectId": "56ae3da4-5a04-4ef1-a907-1bb7f5ce1c49"
-      }
     }
   }
 }
