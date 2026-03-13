@@ -13,7 +13,8 @@ import {
   Alert,
   Dimensions,
   Keyboard,
-  BackHandler
+  BackHandler,
+  Switch
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import ButtonRound from "./components/ButtonRound"
@@ -51,6 +52,7 @@ import {
   useDerivedValue,
 } from "@shopify/react-native-skia";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import { SettingsProvider, useSettings } from './src/contexts/SettingsContext';
 
 //Icons
 import Entypo from '@expo/vector-icons/Entypo';
@@ -208,76 +210,182 @@ function DataScreen() {
   const padding = 15;
   const tabBarHeight = useBottomTabBarHeight();
   const sensorState = useSensorData();
+  const { isDarkMode, colorTheme } = useSettings();
+
+  const themeColors = {
+    background: isDarkMode ? '#121212' : '#f5f5f5',
+    card: isDarkMode ? '#1e1e1e' : '#ffffff',
+    text: isDarkMode ? '#ffffff' : '#000000',
+  };
+
   return (
-    <View style={[styles.screen, { padding: padding }]}>
-      <View style={{ backgroundColor: '#ffffff', borderRadius: 25, height: 150, overflow: 'hidden' }}>
-        <View style={{ backgroundColor: 'lime', flexDirection: 'row' }}>
+    <View style={[styles.screen, { padding: padding, backgroundColor: themeColors.background }]}>
+      <View style={{ backgroundColor: themeColors.card, borderRadius: 25, height: 150, overflow: 'hidden' }}>
+        <View style={{ backgroundColor: colorTheme, flexDirection: 'row' }}>
           <Text style={{ color: 'white', fontWeight: 'bold', left: 12.5, fontSize: 17.5 }}>STATUS: TRAVELLING</Text>
           <Svg height="23" width="100%" viewBox="0 0 20 2">
             <Polygon
               points="0,0 15,0 15,15 20,20"
-              fill="green"
+              fill={colorTheme}
             />
           </Svg>
           <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 17.5, position: "absolute", right: 25 }}>AUTO: ON</Text>
         </View>
 
-        <View style={{ backgroundColor: "white", flex: 1, padding: padding }}>
+        <View style={{ backgroundColor: themeColors.card, flex: 1, padding: padding }}>
           <View style={{ flexDirection: "row" }}>
-            <Text style={{ fontSize: 60, fontWeight: "bold", includeFontPadding: false, lineHeight: 50 }}>60</Text>
-            <Text style={{ textAlignVertical: "bottom", bottom: 0, marginLeft: 3 }}>km/h</Text>
+            <Text style={{ color: themeColors.text, fontSize: 60, fontWeight: "bold", includeFontPadding: false, lineHeight: 50 }}>60</Text>
+            <Text style={{ color: themeColors.text, textAlignVertical: "bottom", bottom: 0, marginLeft: 3 }}>km/h</Text>
             <View style={{ flex: 1, flexDirection: "row", alignItems: "center", marginLeft: 5 }}>
               <View>
-                <Text>RECORDING: </Text>
-                <Text>05:13:45</Text>
+                <Text style={{ color: themeColors.text }}>RECORDING: </Text>
+                <Text style={{ color: themeColors.text }}>05:13:45</Text>
               </View>
               <View style={{ flex: 1, flexDirection: "row", justifyContent: "space-evenly" }}>
-                <ButtonRound size={30}>
-                  <FontAwesome5 name="pause" size={15} color="black" />
+                <ButtonRound size={30} onPress={() => { }}>
+                  <FontAwesome5 name="pause" size={15} color={isDarkMode ? 'white' : 'black'} />
                 </ButtonRound>
-                <ButtonRound size={30}>
-                  <FontAwesome5 name="stop" size={15} color="black" />
+                <ButtonRound size={30} onPress={() => { }}>
+                  <FontAwesome5 name="stop" size={15} color={isDarkMode ? 'white' : 'black'} />
                 </ButtonRound>
-                <ButtonRound size={30}>
-                  <Feather name="x" size={15} color="black" />
+                <ButtonRound size={30} onPress={() => { }}>
+                  <Feather name="x" size={15} color={isDarkMode ? 'white' : 'black'} />
                 </ButtonRound>
               </View>
             </View>
           </View>
           <View style={{ flexDirection: "row", alignItems: "center", bottom: padding, left: padding, position: "absolute" }}>
-            <Text style={{ position: "relative" }}>CONFIDENCE:</Text>
+            <Text style={{ color: themeColors.text, position: "relative" }}>CONFIDENCE:</Text>
             <Progress.Bar progress={1} animated={false} width={null} borderRadius={0} borderWidth={0} color={"red"} unfilledColor={"pink"} style={{ alignSelf: "center", flex: 1, marginLeft: 10 }} />
             <Progress.Bar progress={1} animated={false} width={null} borderRadius={0} borderWidth={0} color={"gold"} unfilledColor={"lightgoldenrodyellow"} style={{ alignSelf: "center", flex: 1 }} />
             <Progress.Bar progress={0.5} animated={false} width={null} borderRadius={0} borderWidth={0} color={"green"} unfilledColor={"lightgreen"} style={{ alignSelf: "center", flex: 1 }} />
           </View>
         </View>
       </View>
-      <Text style={{ fontWeight: "bold", fontSize: 20, padding: 10 }}>Sensors used: </Text>
+      <Text style={{ color: themeColors.text, fontWeight: "bold", fontSize: 20, padding: 10 }}>Sensors used: </Text>
       <ScrollView style={{ borderRadius: 25 }}>
-        <GraphCard title="GPS: " sensor="gps" sensorState={sensorState} />
-        <GraphCard title="Accl: " sensor="accelerometer" sensorState={sensorState} />
-        <GraphCard title="Gyro: " sensor="gyroscope" sensorState={sensorState} />
-        <GraphCard title="Baro: " sensor="barometer" sensorState={sensorState} />
-        <GraphCard title="Mag:" sensor="magnetometer" sensorState={sensorState} />
+        <GraphCard title="GPS: " sensor="gps" sensorState={sensorState} isDarkMode={isDarkMode} />
+        <GraphCard title="Accl: " sensor="accelerometer" sensorState={sensorState} isDarkMode={isDarkMode} />
+        <GraphCard title="Gyro: " sensor="gyroscope" sensorState={sensorState} isDarkMode={isDarkMode} />
+        <GraphCard title="Baro: " sensor="barometer" sensorState={sensorState} isDarkMode={isDarkMode} />
+        <GraphCard title="Mag:" sensor="magnetometer" sensorState={sensorState} isDarkMode={isDarkMode} />
       </ScrollView>
     </View>
   );
 }
 
 function TravelogueScreen() {
+  const { isDarkMode } = useSettings();
+  const themeColors = {
+    background: isDarkMode ? '#121212' : '#f5f5f5',
+    text: isDarkMode ? '#ffffff' : '#000000',
+  };
   return (
-    <View>
-      <Text>This is the travelogue screen.</Text>
+    <View style={[styles.settingsScreen, { backgroundColor: themeColors.background }]}>
+      <Text style={{ color: themeColors.text }}>This is the travelogue screen.</Text>
     </View>
   );
 }
 
 function SettingsScreen() {
+  const {
+    isDarkMode,
+    toggleDarkMode,
+    notificationsEnabled,
+    toggleNotifications,
+    engineType,
+    setEngineType,
+    colorTheme,
+    setColorTheme,
+  } = useSettings();
+
+  const insets = useSafeAreaInsets();
+  const themeColors = {
+    background: isDarkMode ? '#121212' : '#f5f5f5',
+    card: isDarkMode ? '#1e1e1e' : '#ffffff',
+    text: isDarkMode ? '#ffffff' : '#000000',
+    textSecondary: isDarkMode ? '#aaaaaa' : '#666666',
+    border: isDarkMode ? '#333333' : '#e0e0e0',
+  };
+
+  const renderEngineButton = (type, label) => (
+    <Pressable
+      style={[
+        styles.engineButton,
+        engineType === type && { backgroundColor: colorTheme, borderColor: colorTheme },
+        { borderColor: themeColors.border }
+      ]}
+      onPress={() => setEngineType(type)}
+    >
+      <Text style={[styles.engineText, { color: engineType === type ? '#ffffff' : themeColors.text }]}>{label}</Text>
+    </Pressable>
+  );
+
+  const colors = ['#003CB3', '#D32F2F', '#388E3C', '#FBC02D', '#7B1FA2'];
+
   return (
-    <View>
-      <Text>This is the settings screen.</Text>
-    </View>
-  )
+    <ScrollView style={[styles.settingsScreen, { backgroundColor: themeColors.background }]}>
+      <View style={{ paddingTop: insets.top, paddingBottom: insets.bottom + 20 }}>
+        <Text style={[styles.headerText, { color: themeColors.text }]}>Settings</Text>
+
+        <View style={[styles.settingsCard, { backgroundColor: themeColors.card, borderColor: themeColors.border }]}>
+          <View style={styles.settingRow}>
+            <View>
+              <Text style={[styles.settingTitle, { color: themeColors.text }]}>Dark Mode</Text>
+              <Text style={[styles.settingDesc, { color: themeColors.textSecondary }]}>Toggle application theme</Text>
+            </View>
+            <Switch
+              value={isDarkMode}
+              onValueChange={toggleDarkMode}
+              trackColor={{ false: '#767577', true: colorTheme }}
+              thumbColor={'#ffffff'}
+            />
+          </View>
+
+          <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: themeColors.border }]}>
+            <View>
+              <Text style={[styles.settingTitle, { color: themeColors.text }]}>Notifications</Text>
+              <Text style={[styles.settingDesc, { color: themeColors.textSecondary }]}>Enable push notifications</Text>
+            </View>
+            <Switch
+              value={notificationsEnabled}
+              onValueChange={toggleNotifications}
+              trackColor={{ false: '#767577', true: colorTheme }}
+              thumbColor={'#ffffff'}
+            />
+          </View>
+        </View>
+
+        <Text style={[styles.sectionTitle, { color: themeColors.textSecondary }]}>VEHICLE</Text>
+        <View style={[styles.settingsCard, { backgroundColor: themeColors.card, borderColor: themeColors.border, paddingVertical: 15 }]}>
+          <Text style={[styles.settingTitle, { color: themeColors.text, marginBottom: 10, paddingHorizontal: 15 }]}>Engine Type</Text>
+          <View style={styles.engineContainer}>
+            {renderEngineButton('petrol', 'Petrol')}
+            {renderEngineButton('diesel', 'Diesel')}
+            {renderEngineButton('electric', 'Electric')}
+          </View>
+        </View>
+
+        <Text style={[styles.sectionTitle, { color: themeColors.textSecondary }]}>APPEARANCE</Text>
+        <View style={[styles.settingsCard, { backgroundColor: themeColors.card, borderColor: themeColors.border, padding: 15 }]}>
+          <Text style={[styles.settingTitle, { color: themeColors.text, marginBottom: 15 }]}>Theme Color</Text>
+          <View style={styles.colorContainer}>
+            {colors.map((c) => (
+              <Pressable
+                key={c}
+                style={[
+                  styles.colorCircle,
+                  { backgroundColor: c },
+                  colorTheme === c && styles.colorSelected
+                ]}
+                onPress={() => setColorTheme(c)}
+              />
+            ))}
+          </View>
+        </View>
+      </View>
+    </ScrollView>
+  );
 }
 
 function AboutUsScreen() {
@@ -342,8 +450,15 @@ function Tabs() {
 
 function CustomDrawerContent(props) {
   const { state, navigation } = props;
+  const { isDarkMode, colorTheme } = useSettings();
+  const themeColors = {
+    background: isDarkMode ? '#1e1e1e' : '#ffffff',
+    text: isDarkMode ? '#ffffff' : 'black',
+    inactiveText: isDarkMode ? '#aaaaaa' : 'gray',
+  };
+
   return (
-    <DrawerContentScrollView {...props}>
+    <DrawerContentScrollView {...props} style={{ backgroundColor: themeColors.background }}>
       <View style={styles.logoContainer}>
         <Image
           source={require('./assets/travelsense-banner.png')}
@@ -357,28 +472,30 @@ function CustomDrawerContent(props) {
         label="Home"
         focused={state.index === 0}
         activeTintColor="white"
-        inactiveTintColor="gray"
-        activeBackgroundColor="#003CB3"
-        icon={({ color, size }) => (<AntDesign name="home" size={24} color="black" />)}
-        //onPress={() => props.navigation.navigate('Main', { screen: 'HomeScreen' })}
+        inactiveTintColor={themeColors.inactiveText}
+        activeBackgroundColor={colorTheme}
+        labelStyle={{ color: state.index === 0 ? 'white' : themeColors.text }}
+        icon={({ color, size }) => (<AntDesign name="home" size={24} color={state.index === 0 ? 'white' : themeColors.text} />)}
         onPress={() => props.navigation.navigate('Main', { screen: 'HomeScreen' })}
       />
       <DrawerItem
         label="Settings"
         focused={state.index === 1}
         activeTintColor="white"
-        inactiveTintColor="gray"
-        activeBackgroundColor="#003CB3"
-        icon={({ color, size }) => (<AntDesign name="setting" size={24} color="black" />)}
+        inactiveTintColor={themeColors.inactiveText}
+        activeBackgroundColor={colorTheme}
+        labelStyle={{ color: state.index === 1 ? 'white' : themeColors.text }}
+        icon={({ color, size }) => (<AntDesign name="setting" size={24} color={state.index === 1 ? 'white' : themeColors.text} />)}
         onPress={() => props.navigation.navigate('Main', { screen: 'Settings' })}
       />
       <DrawerItem
         label="About Us"
         focused={state.index === 2}
         activeTintColor="white"
-        inactiveTintColor="gray"
-        activeBackgroundColor="#003CB3"
-        icon={({ color, size }) => (<AntDesign name="question-circle" size={24} color="black" />)}
+        inactiveTintColor={themeColors.inactiveText}
+        activeBackgroundColor={colorTheme}
+        labelStyle={{ color: state.index === 2 ? 'white' : themeColors.text }}
+        icon={({ color, size }) => (<AntDesign name="question-circle" size={24} color={state.index === 2 ? 'white' : themeColors.text} />)}
         onPress={() => props.navigation.navigate('Main', { screen: 'About Us' })}
       />
     </DrawerContentScrollView>
@@ -417,16 +534,18 @@ export default function App({ navigation }) {
   }, []);
 
   return (
-    <NavigationContainer>
-      <Drawer.Navigator
-        drawerContent={(props) => <CustomDrawerContent {...props} />}
-        screenOptions={{
-          headerShown: false, drawerType: "front", detachInactiveScreens: false,
-        }}
-      >
-        <Drawer.Screen name="Main" component={DrawerStack}></Drawer.Screen>
-      </Drawer.Navigator>
-    </NavigationContainer>
+    <SettingsProvider>
+      <NavigationContainer>
+        <Drawer.Navigator
+          drawerContent={(props) => <CustomDrawerContent {...props} />}
+          screenOptions={{
+            headerShown: false, drawerType: "front", detachInactiveScreens: false,
+          }}
+        >
+          <Drawer.Screen name="Main" component={DrawerStack}></Drawer.Screen>
+        </Drawer.Navigator>
+      </NavigationContainer>
+    </SettingsProvider>
   )
 }
 
@@ -475,6 +594,78 @@ const styles = StyleSheet.create({
   },
   inputWrapper: {
     flex: 0,
+  },
+  settingsScreen: {
+    padding: 15,
+    flex: 1,
+  },
+  engineContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 15,
+  },
+  engineButton: {
+    flex: 1,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginHorizontal: 4,
+  },
+  engineText: {
+    fontWeight: '600',
+  },
+  colorContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+  },
+  colorCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  colorSelected: {
+    borderColor: '#ffffff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+    elevation: 5,
+  },
+  settingsCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 20,
+    overflow: 'hidden',
+  },
+  settingRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 15,
+  },
+  settingTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  settingDesc: {
+    fontSize: 13,
+    marginTop: 2,
+  },
+  sectionTitle: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    marginLeft: 15,
+    marginBottom: 8,
+    letterSpacing: 1,
+  },
+  headerText: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    marginBottom: 20,
+    marginLeft: 5,
   },
   input: {
     color: "gray",

@@ -18,9 +18,15 @@ const SENSOR_CONFIG = {
 	gps: { dims: 2, colors: ["#0A84FF", "#FF9F0A"] },
 };
 
-export default function GraphCard({ title = "Text: ", sensor = "accelerometer", sensorState }) {
+export default function GraphCard({ title = "Text: ", sensor = "accelerometer", sensorState, isDarkMode = false }) {
 	const config = SENSOR_CONFIG[sensor] || SENSOR_CONFIG["accelerometer"];
 	const scrollViewRef = useRef(null);
+
+	const themeColors = {
+		background: isDarkMode ? '#1e1e1e' : 'white',
+		text: isDarkMode ? '#ffffff' : 'black',
+		grid: isDarkMode ? '#333333' : '#e0e0e0',
+	};
 
 	// Get data directly from the passed-in sensorState history
 	const data = sensorState.history[sensor];
@@ -50,7 +56,7 @@ export default function GraphCard({ title = "Text: ", sensor = "accelerometer", 
 	// Create gridlines once
 	const gridPaths = useMemo(() => {
 		const result = [];
-		const gridColor = '#e0e0e0';
+		const gridColor = themeColors.grid;
 		const gridStroke = 1;
 		const numVertical = Math.floor(GRAPH_WIDTH / 50);
 		const numHorizontal = 5;
@@ -74,10 +80,10 @@ export default function GraphCard({ title = "Text: ", sensor = "accelerometer", 
 	}, []);
 
 	return (
-		<View style={{ padding: 25 / 2, backgroundColor: "white", borderRadius: 25, height: 100, overflow: "hidden", marginBottom: 15, flexDirection: "row" }}>
-			<Text style={{ fontWeight: "bold", fontSize: 40, textAlignVertical: "center", width: 100, flexDirection: "row" }}>{title}</Text>
-			<View style={{ backgroundColor: "lightgray", flex: 1 }}>
-				<View style={{ backgroundColor: "#ffffff", justifyContent: "center" }}>
+		<View style={{ padding: 25 / 2, backgroundColor: themeColors.background, borderRadius: 25, height: 100, overflow: "hidden", marginBottom: 15, flexDirection: "row" }}>
+			<Text style={{ fontWeight: "bold", fontSize: 40, textAlignVertical: "center", width: 100, flexDirection: "row", color: themeColors.text }}>{title}</Text>
+			<View style={{ backgroundColor: isDarkMode ? "#2c2c2c" : "lightgray", flex: 1 }}>
+				<View style={{ backgroundColor: themeColors.background, justifyContent: "center" }}>
 					<ScrollView
 						horizontal
 						showsHorizontalScrollIndicator={true}
