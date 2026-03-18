@@ -1,12 +1,28 @@
+import * as FileSystem from 'expo-file-system/legacy';
+
 class SensorUpload {
     constructor() {
         this.dataBatch = [];
-        this.uploadInterval = 10 * 60 * 1000; // 10 minutes
-        this.maxBatchDuration = 5 * 60 * 1000; // Keep only last 5 minutes of data
+        this.uploadInterval = 10 * 60 * 1000;
+        this.maxBatchDuration = 5 * 60 * 1000;
         this.timer = null;
-        // Default URL to localhost. Depending on the environment, 
-        // it may need to be changed to the local network IP.
-        this.uploadUrl = 'http://192.168.1.4:3001/upload-sensor-data';
+        this.uploadUrl = 'http://192.168.123.70:3001/upload-sensor-data';
+    }
+
+    async archiveBatch() {
+        if (this.dataBatch.length === 0) return;
+        
+        const firstTimestamp = this.dataBatch[0].timestamp.replace(/:/g, '-').split('.')[0];
+        const filename = `sensor_data_${firstTimestamp}.json`;
+        const filePath = FileSystem.documentDirectory + filename;
+
+        try {
+            await FileSystem.writeAsStringAsync(filePath, JSON.stringify(this.dataBatch, null, 2));
+            console.log(`SensorUpload: Archived 5-minute batch to ${filename}`);
+            this.dataBatch = [];
+        } catch (e) {
+            console.error('SensorUpload: Archiving failed:', e.message);
+        }
     }
 
     startAutoUpload() {
@@ -72,9 +88,16 @@ class SensorUpload {
     addData(dataPoint) {
         this.dataBatch.push(this.formatData(dataPoint));
 
-        // Discard data older than 5 minutes
-        const cutoffTime = new Date(Date.now() - this.maxBatchDuration).getTime();
-        this.dataBatch = this.dataBatch.filter(row => new Date(row.timestamp).getTime() > cutoffTime);
+        // Check if the current batch covers 5 minutes
+        if (this.dataBatch.length > 1) {
+            const firstTime = new Date(this.dataBatch[0].timestamp).getTime();
+            const lastTime = new Date(this.dataBatch[this.dataBatch.length - 1].timestamp).getTime();
+            
+            if (lastTime - firstTime >= this.maxBatchDuration) {
+                this.archiveBatch();
+                return;
+            }
+        }
     }
 
     async fetchPotholes() {
@@ -150,6 +173,46 @@ class SensorUpload {
         } catch (error) {
             console.error('SensorUpload: Error uploading sensor data:', error.message);
             throw error; // Rethrow so the UI can catch it
+        }
+    }
+
+    async getArchivedFiles() {
+        try {
+            const files = await FileSystem.readDirectoryAsync(FileSystem.documentDirectory);
+            return files.filter(f => f.startsWith('sensor_data_') && f.endsWith('.json'));
+        } catch (e) {
+            console.error('SensorUpload: Failed to list archives:', e.message);
+            return [];
+        }
+    }
+
+    async uploadArchivedFile(filename, deviceId = 'device-1') {
+        const filePath = FileSystem.documentDirectory + filename;
+        try {
+            const json = await FileSystem.readAsStringAsync(filePath);
+            const data = JSON.parse(json);
+
+            const payload = {
+                deviceId,
+                data
+            };
+
+            const response = await fetch(this.uploadUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (response.ok) {
+                console.log(`SensorUpload: Uploaded ${filename}`);
+                await FileSystem.deleteAsync(filePath, { idempotent: true });
+                return true;
+            } else {
+                throw new Error(`Upload failed for ${filename}: ${response.status}`);
+            }
+        } catch (e) {
+            console.error('SensorUpload: Failed to upload archive:', e.message);
+            throw e;
         }
     }
 }

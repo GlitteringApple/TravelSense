@@ -131,7 +131,7 @@ export function useSensorData() {
         history: nextHistory,
         tick: prev.tick + 1
       }));
-    }, 32);
+    }, 100);
 
     return () => {
       accelSub && accelSub.remove();

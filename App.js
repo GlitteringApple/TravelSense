@@ -1,6 +1,7 @@
 import {
   View,
   Text,
+  Modal,
   Image,
   ImageBackground,
   ScrollView,
@@ -27,7 +28,7 @@ import {
   useNavigation,
 } from '@react-navigation/native';
 import { createBottomTabNavigator, useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -42,7 +43,7 @@ import {
 } from '@react-navigation/drawer';
 import Svg, { Polygon } from 'react-native-svg';
 import * as Progress from 'react-native-progress';
-import MapView, { PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { PROVIDER_GOOGLE, Marker, Callout } from 'react-native-maps';
 import { Accelerometer, Gyroscope } from "expo-sensors";
 import {
   Canvas,
@@ -61,6 +62,9 @@ import AntDesign from '@expo/vector-icons/AntDesign';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import Feather from '@expo/vector-icons/Feather';
 import FontAwesome5 from '@expo/vector-icons/FontAwesome5';
+import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system/legacy';
+import { Platform } from 'react-native';
 
 /* ------------------ Screens ------------------ */
 
@@ -157,10 +161,50 @@ function HomeScreen() {
   });
 
   const [barStyle, setBarStyle] = useState('light-content');
+  const { globalPotholes } = useSettings();
+  const [zoomLevel, setZoomLevel] = useState(0.01);
+  const HIDE_THRESHOLD = 0.5; // If longitudeDelta > 0.5, hide all potholes
 
   const onRunFunction = (barStyle) => {
     setBarStyle(barStyle);
   };
+
+  // Basic grid-based clustering
+  const getClusteredPotholes = () => {
+    if (!globalPotholes || globalPotholes.length === 0 || zoomLevel > HIDE_THRESHOLD) return [];
+
+    // Dynamically adjust grid size based on zoom level. 
+    // Closer zoom = smaller grid cells = more individual markers
+    const gridSize = zoomLevel / 10;
+
+    const clusters = {};
+
+    globalPotholes.forEach((pothole) => {
+      // Create a grid key by rounding coordinates
+      const gridLat = Math.round(pothole.gps_latitude / gridSize) * gridSize;
+      const gridLng = Math.round(pothole.gps_longitude / gridSize) * gridSize;
+      const key = `${gridLat.toFixed(5)},${gridLng.toFixed(5)}`;
+
+      if (!clusters[key]) {
+        clusters[key] = {
+          ...pothole,
+          count: 1,
+          maxSeverity: pothole.severity
+        };
+      } else {
+        clusters[key].count += 1;
+        // Keep the highest severity in the cluster
+        if (pothole.severity > clusters[key].maxSeverity) {
+          clusters[key].maxSeverity = pothole.severity;
+          clusters[key].severity = pothole.severity;
+        }
+      }
+    });
+
+    return Object.values(clusters);
+  };
+
+  const clusteredPotholes = useMemo(() => getClusteredPotholes(), [globalPotholes, zoomLevel]);
 
   //Fullscreen component
   const navigation = useNavigation();
@@ -170,9 +214,43 @@ function HomeScreen() {
     });
     return unsubscribe;
   }, [navigation]);
+
   return (
     <View style={styles.fullscreen}>
-      <MapView provider={PROVIDER_GOOGLE} style={StyleSheet.absoluteFillObject} />
+      <MapView
+        provider={PROVIDER_GOOGLE}
+        style={StyleSheet.absoluteFillObject}
+        showsUserLocation={true}
+        followsUserLocation={true}
+        onRegionChangeComplete={(region) => {
+          setZoomLevel(region.longitudeDelta);
+        }}
+      >
+        {clusteredPotholes.map((pothole, index) => (
+          <Marker
+            key={index}
+            coordinate={{ latitude: pothole.gps_latitude, longitude: pothole.gps_longitude }}
+          >
+            {/* <View style={{ backgroundColor: 'transparent', alignItems: 'center', justifyContent: 'center', width: 38, height: 38 }}>
+              <Text style={{ fontSize: 24 }}>🕳️</Text>
+              {pothole.count > 1 && (
+                <View style={{ backgroundColor: 'red', borderRadius: 10, paddingHorizontal: 4, position: 'absolute', top: -5, right: -10 }}>
+                  <Text style={{ color: 'white', fontSize: 10, fontWeight: 'bold' }}>{pothole.count}</Text>
+                </View>
+              )}
+            </View> */}
+            {/* <Callout tooltip>
+              <View style={{ backgroundColor: 'white', borderRadius: 10, padding: 10, minWidth: 150, elevation: 5 }}>
+                <Text style={{ fontWeight: 'bold', fontSize: 16, marginBottom: 5 }}>Pothole Cluster</Text>
+                <Text>Count: {pothole.count}</Text>
+                <Text>Max Jolt: {pothole.maxSeverity.toFixed(2)} G</Text>
+                <Text style={{ fontSize: 10, color: 'gray', marginTop: 5 }}>Lat: {pothole.gps_latitude.toFixed(5)}</Text>
+                <Text style={{ fontSize: 10, color: 'gray' }}>Lng: {pothole.gps_longitude.toFixed(5)}</Text>
+              </View>
+            </Callout> */}
+          </Marker>
+        ))}
+      </MapView>
       <StatusBar translucent backgroundColor="transparent" barStyle={barStyle} />
       {/* <ImageBackground source={mapImg} style={{ flex: 1 }}> */}
       <View style={{ flex: 1 }}>
@@ -208,14 +286,238 @@ function HomeScreen() {
 
 import SensorUpload from './src/sensors/SensorUpload';
 
+/* ---------- Pothole Editor Modal ---------- */
+function PotholeEditorModal({ visible, onClose, potholes, onSave }) {
+  const [text, setText] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (visible) {
+      setText(JSON.stringify(potholes, null, 2));
+      setError('');
+    }
+  }, [visible]);
+
+  const handleSave = () => {
+    try {
+      const parsed = JSON.parse(text);
+      onSave(parsed);
+      onClose();
+    } catch (e) {
+      setError('Invalid JSON: ' + e.message);
+    }
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+      <View style={{ flex: 1, backgroundColor: '#1a1a2e' }}>
+        {/* Header */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', padding: 16, paddingTop: 48, borderBottomWidth: 1, borderBottomColor: '#333' }}>
+          <Text style={{ flex: 1, color: '#e0e0e0', fontSize: 18, fontWeight: 'bold' }}>📋 Sensor Data Editor</Text>
+          <Pressable onPress={onClose} style={{ padding: 8 }}>
+            <MaterialIcons name="close" size={24} color="#e0e0e0" />
+          </Pressable>
+        </View>
+        {/* File hint */}
+        <Text style={{ color: '#888', fontSize: 11, paddingHorizontal: 16, paddingTop: 8 }}>
+          Saved to: sensor_data.json (app documents folder)
+        </Text>
+        {/* Editor */}
+        <ScrollView style={{ flex: 1, padding: 16 }} keyboardShouldPersistTaps="handled">
+          <TextInput
+            multiline
+            value={text}
+            onChangeText={setText}
+            style={{ fontFamily: 'monospace', color: '#a8ff78', fontSize: 12, lineHeight: 18, backgroundColor: '#0a0a1a', padding: 12, borderRadius: 8, minHeight: 400 }}
+            autoCapitalize="none"
+            autoCorrect={false}
+            spellCheck={false}
+          />
+        </ScrollView>
+        {/* Validation error */}
+        {error ? <Text style={{ color: '#ff6b6b', paddingHorizontal: 16, paddingBottom: 4, fontSize: 12 }}>{error}</Text> : null}
+        {/* Actions */}
+        <View style={{ flexDirection: 'row', gap: 12, padding: 16, paddingBottom: 32 }}>
+          <Pressable onPress={onClose} style={{ flex: 1, padding: 14, borderRadius: 12, backgroundColor: '#333', alignItems: 'center' }}>
+            <Text style={{ color: '#e0e0e0', fontWeight: 'bold' }}>Cancel</Text>
+          </Pressable>
+          <Pressable onPress={handleSave} style={{ flex: 1, padding: 14, borderRadius: 12, backgroundColor: '#003CB3', alignItems: 'center' }}>
+            <Text style={{ color: 'white', fontWeight: 'bold' }}>Save</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+/* ---------- Internal Files Manager Modal ---------- */
+function InternalFilesModal({ visible, onClose }) {
+  const [files, setFiles] = useState([]);
+  const { isDarkMode, colorTheme } = useSettings();
+
+  const themeColors = {
+    background: isDarkMode ? '#1a1a2e' : '#f8f9fa',
+    header: isDarkMode ? '#161625' : '#ffffff',
+    card: isDarkMode ? '#252545' : '#ffffff',
+    text: isDarkMode ? '#ffffff' : '#333333',
+    textSecondary: isDarkMode ? '#aaaaaa' : '#666666',
+    border: isDarkMode ? '#333355' : '#eeeeee',
+  };
+
+  const loadFiles = async () => {
+    try {
+      const fileNames = await FileSystem.readDirectoryAsync(FileSystem.documentDirectory);
+      const fileInfos = await Promise.all(
+        fileNames.map(async (name) => {
+          const info = await FileSystem.getInfoAsync(FileSystem.documentDirectory + name);
+          return { name, ...info };
+        })
+      );
+      // Sort by modification time (most recent first) if available, otherwise name
+      fileInfos.sort((a, b) => (b.modificationTime || 0) - (a.modificationTime || 0));
+      setFiles(fileInfos);
+    } catch (e) {
+      console.error('Failed to load files:', e);
+    }
+  };
+
+  useEffect(() => {
+    if (visible) loadFiles();
+  }, [visible]);
+
+  const handleShare = async (name) => {
+    try {
+      await Sharing.shareAsync(FileSystem.documentDirectory + name, {
+        dialogTitle: `Export ${name}`,
+        mimeType: 'application/octet-stream',
+      });
+    } catch (e) {
+      Alert.alert('Error', 'Could not share file.');
+    }
+  };
+
+  const handleDelete = (name) => {
+    Alert.alert(
+      'Delete File',
+      `Are you sure you want to delete ${name}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Delete', 
+          style: 'destructive', 
+          onPress: async () => {
+            await FileSystem.deleteAsync(FileSystem.documentDirectory + name);
+            loadFiles();
+          } 
+        }
+      ]
+    );
+  };
+
+  const formatSize = (bytes) => {
+    if (!bytes) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={onClose}>
+      <View style={{ flex: 1, backgroundColor: themeColors.background }}>
+        <View style={{ 
+          paddingTop: 50, 
+          paddingBottom: 15, 
+          paddingHorizontal: 20, 
+          backgroundColor: themeColors.header,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          borderBottomWidth: 1,
+          borderBottomColor: themeColors.border,
+          elevation: 4
+        }}>
+          <Text style={{ fontSize: 20, fontWeight: 'bold', color: themeColors.text }}>Internal Files</Text>
+          <Pressable onPress={onClose} style={{ padding: 5 }}>
+            <MaterialIcons name="close" size={28} color={themeColors.text} />
+          </Pressable>
+        </View>
+
+        <ScrollView style={{ flex: 1, padding: 15 }}>
+          {files.length === 0 ? (
+            <View style={{ marginTop: 100, alignItems: 'center' }}>
+              <Feather name="folder" size={60} color={themeColors.textSecondary} />
+              <Text style={{ marginTop: 15, color: themeColors.textSecondary, fontSize: 16 }}>No files found</Text>
+            </View>
+          ) : (
+            files.map((file, index) => (
+              <View key={index} style={{ 
+                backgroundColor: themeColors.card, 
+                borderRadius: 12, 
+                padding: 15, 
+                marginBottom: 10,
+                flexDirection: 'row',
+                alignItems: 'center',
+                borderWidth: 1,
+                borderColor: themeColors.border,
+                elevation: 2
+              }}>
+                <View style={{ 
+                  width: 40, 
+                  height: 40, 
+                  borderRadius: 8, 
+                  backgroundColor: file.name.endsWith('.json') ? '#4a90e222' : '#88822',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginRight: 15
+                }}>
+                  <FontAwesome5 
+                    name={file.name.endsWith('.json') ? "file-code" : "file-alt"} 
+                    size={20} 
+                    color={file.name.endsWith('.json') ? "#4a90e2" : themeColors.textSecondary} 
+                  />
+                </View>
+                
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: themeColors.text, fontWeight: '600', fontSize: 14 }} numberOfLines={1}>
+                    {file.name}
+                  </Text>
+                  <Text style={{ color: themeColors.textSecondary, fontSize: 12, marginTop: 2 }}>
+                    {formatSize(file.size)} • {new Date(file.modificationTime * 1000).toLocaleDateString()}
+                  </Text>
+                </View>
+
+                <View style={{ flexDirection: 'row', gap: 10 }}>
+                  <Pressable onPress={() => handleShare(file.name)} style={{ padding: 8 }}>
+                    <Feather name="share" size={20} color={colorTheme} />
+                  </Pressable>
+                  <Pressable onPress={() => handleDelete(file.name)} style={{ padding: 8 }}>
+                    <Feather name="trash-2" size={20} color="#ff4444" />
+                  </Pressable>
+                </View>
+              </View>
+            ))
+          )}
+        </ScrollView>
+        
+        <View style={{ padding: 20, backgroundColor: themeColors.header, borderTopWidth: 1, borderTopColor: themeColors.border }}>
+          <Text style={{ color: themeColors.textSecondary, fontSize: 11, textAlign: 'center' }}>
+            Files are stored in the app's secure internal storage. Use the share button to export them to your system's file manager.
+          </Text>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function DataScreen() {
   const padding = 15;
   const tabBarHeight = useBottomTabBarHeight();
   const sensorState = useSensorData();
-  const { isDarkMode, colorTheme } = 0;
+  const { isDarkMode, colorTheme, globalPotholes, setGlobalPotholes, savePotholes } = useSettings();
   const [isUploading, setIsUploading] = useState(false);
   const [elapsedTime, setElapsedTime] = useState(0);
-  const [localPotholes, setLocalPotholes] = useState([]);
+  const [editorVisible, setEditorVisible] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -261,7 +563,7 @@ function DataScreen() {
   const handleFetchPotholes = async () => {
     try {
       const data = await SensorUpload.fetchPotholes();
-      setLocalPotholes(data);
+      await savePotholes(data);
       Alert.alert('Sync Complete', `Stored ${data.length} potholes locally.`);
     } catch (error) {
       Alert.alert('Sync Error', error.message);
@@ -280,68 +582,82 @@ function DataScreen() {
   const currentSpeed = Math.round(sensorState.data.gps.speed || 0);
 
   return (
-    <View style={[styles.screen, { padding: padding, backgroundColor: themeColors.background }]}>
-      <View style={{ backgroundColor: themeColors.card, borderRadius: 25, height: 150, overflow: 'hidden' }}>
-        <View style={{ backgroundColor: colorTheme, flexDirection: 'row' }}>
-          <Text style={{ color: 'white', fontWeight: 'bold', left: 12.5, fontSize: 17.5 }}>STATUS: TRAVELLING</Text>
-          <Svg height="23" width="100%" viewBox="0 0 20 2">
-            <Polygon
-              points="0,0 15,0 15,15 20,20"
-              fill={colorTheme}
-            />
-          </Svg>
-          <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 17.5, position: "absolute", right: 25 }}>AUTO: ON</Text>
-        </View>
+    <>
+      <View style={[styles.screen, { padding: padding, backgroundColor: themeColors.background }]}>
+        <View style={{ backgroundColor: themeColors.card, borderRadius: 25, height: 150, overflow: 'hidden' }}>
+          <View style={{ backgroundColor: 'lime', flexDirection: 'row' }}>
+            <Text style={{ color: 'white', fontWeight: 'bold', left: 12.5, fontSize: 17.5 }}>STATUS: TRAVELLING</Text>
+            <Svg height="23" width="100%" viewBox="0 0 20 2">
+              <Polygon
+                points="0,0 15,0 15,15 20,20"
+                fill={'green'}
+              />
+            </Svg>
+            <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 17.5, position: "absolute", right: 25 }}>AUTO: ON</Text>
+          </View>
 
-        <View style={{ backgroundColor: themeColors.card, flex: 1, padding: padding }}>
-          <View style={{ flexDirection: "row" }}>
-            <Text style={{ color: themeColors.text, fontSize: 60, fontWeight: "bold", includeFontPadding: false, lineHeight: 50 }}>{currentSpeed}</Text>
-            <Text style={{ color: themeColors.text, textAlignVertical: "bottom", bottom: 0, marginLeft: 3 }}>km/h</Text>
-            <View style={{ flex: 1, flexDirection: "row", alignItems: "center", marginLeft: 5 }}>
-              <View>
-                <Text style={{ color: themeColors.text }}>RECORDING: </Text>
-                <Text style={{ color: themeColors.text }}>{formatTime(elapsedTime)}</Text>
-              </View>
-              <View style={{ flex: 1, flexDirection: "row", justifyContent: "space-evenly" }}>
-                <ButtonRound size={30} onPress={() => { }}>
-                  <FontAwesome5 name="pause" size={15} color={isDarkMode ? 'white' : 'black'} />
-                </ButtonRound>
-                <ButtonRound size={30} onPress={handleTestConnection}>
-                  <MaterialIcons name="storage" size={15} color={isDarkMode ? 'white' : 'black'} />
-                </ButtonRound>
-                <ButtonRound size={30} onPress={handleFetchPotholes}>
-                  <FontAwesome5 name="map-marker-alt" size={15} color={isDarkMode ? 'white' : 'black'} />
-                </ButtonRound>
-                <ButtonRound size={30} onPress={handleTriggerProcessing}>
-                  <MaterialIcons name="analytics" size={15} color={isDarkMode ? 'white' : 'black'} />
-                </ButtonRound>
-                <ButtonRound size={30} onPress={handleFlushData} disabled={isUploading}>
-                  {isUploading ? (
-                    <ActivityIndicator size="small" color={isDarkMode ? 'white' : 'black'} />
-                  ) : (
-                    <FontAwesome5 name="upload" size={15} color={isDarkMode ? 'white' : 'black'} />
-                  )}
-                </ButtonRound>
+          <View style={{ backgroundColor: themeColors.card, flex: 1, padding: padding }}>
+            <View style={{ flexDirection: "row" }}>
+              <Text style={{ color: themeColors.text, fontSize: 60, fontWeight: "bold", includeFontPadding: false, lineHeight: 50 }}>{currentSpeed}</Text>
+              <Text style={{ color: themeColors.text, textAlignVertical: "bottom", bottom: 0, marginLeft: 3 }}>km/h</Text>
+              <View style={{ flex: 1, flexDirection: "row", alignItems: "center", marginLeft: 5 }}>
+                <View>
+                  <Text style={{ color: themeColors.text }}>RECORDING: </Text>
+                  <Text style={{ color: themeColors.text }}>{formatTime(elapsedTime)}</Text>
+                </View>
+                <View style={{ flex: 1, flexDirection: "row", justifyContent: "space-evenly" }}>
+                  <ButtonRound size={30} onPress={() => { }}>
+                    <FontAwesome5 name="pause" size={15} color={isDarkMode ? 'white' : 'black'} />
+                  </ButtonRound>
+                  <ButtonRound size={30} onPress={handleTestConnection}>
+                    <MaterialIcons name="storage" size={15} color={isDarkMode ? 'white' : 'black'} />
+                  </ButtonRound>
+                  <ButtonRound size={30} onPress={handleFetchPotholes}>
+                    <FontAwesome5 name="map-marker-alt" size={15} color={isDarkMode ? 'white' : 'black'} />
+                  </ButtonRound>
+                  <ButtonRound size={30} onPress={handleTriggerProcessing}>
+                    <MaterialIcons name="analytics" size={15} color={isDarkMode ? 'white' : 'black'} />
+                  </ButtonRound>
+                  <ButtonRound size={30} onPress={() => setEditorVisible(true)}>
+                    <Feather name="eye" size={15} color={isDarkMode ? 'white' : 'black'} />
+                  </ButtonRound>
+                  <ButtonRound size={30} onPress={handleFlushData} disabled={isUploading}>
+                    {isUploading ? (
+                      <ActivityIndicator size="small" color={isDarkMode ? 'white' : 'black'} />
+                    ) : (
+                      <FontAwesome5 name="upload" size={15} color={isDarkMode ? 'white' : 'black'} />
+                    )}
+                  </ButtonRound>
+                </View>
               </View>
             </View>
-          </View>
-          <View style={{ flexDirection: "row", alignItems: "center", bottom: padding, left: padding, position: "absolute" }}>
-            <Text style={{ color: themeColors.text, position: "relative" }}>CONFIDENCE:</Text>
-            <Progress.Bar progress={1} animated={false} width={null} borderRadius={0} borderWidth={0} color={"red"} unfilledColor={"pink"} style={{ alignSelf: "center", flex: 1, marginLeft: 10 }} />
-            <Progress.Bar progress={1} animated={false} width={null} borderRadius={0} borderWidth={0} color={"gold"} unfilledColor={"lightgoldenrodyellow"} style={{ alignSelf: "center", flex: 1 }} />
-            <Progress.Bar progress={0.5} animated={false} width={null} borderRadius={0} borderWidth={0} color={"green"} unfilledColor={"lightgreen"} style={{ alignSelf: "center", flex: 1 }} />
+            <View style={{ flexDirection: "row", alignItems: "center", bottom: padding, left: padding, position: "absolute" }}>
+              <Text style={{ color: themeColors.text, position: "relative" }}>CONFIDENCE:</Text>
+              <Progress.Bar progress={1} animated={false} width={null} borderRadius={0} borderWidth={0} color={"red"} unfilledColor={"pink"} style={{ alignSelf: "center", flex: 1, marginLeft: 10 }} />
+              <Progress.Bar progress={1} animated={false} width={null} borderRadius={0} borderWidth={0} color={"gold"} unfilledColor={"lightgoldenrodyellow"} style={{ alignSelf: "center", flex: 1 }} />
+              <Progress.Bar progress={0.5} animated={false} width={null} borderRadius={0} borderWidth={0} color={"green"} unfilledColor={"lightgreen"} style={{ alignSelf: "center", flex: 1 }} />
+            </View>
           </View>
         </View>
+        <Text style={{ color: themeColors.text, fontWeight: "bold", fontSize: 20, padding: 10 }}>Sensors used: </Text>
+        <ScrollView style={{ borderRadius: 25 }}>
+          <GraphCard title="GPS: " sensor="gps" sensorState={sensorState} isDarkMode={isDarkMode} />
+          <GraphCard title="Accl: " sensor="accelerometer" sensorState={sensorState} isDarkMode={isDarkMode} />
+          <GraphCard title="Gyro: " sensor="gyroscope" sensorState={sensorState} isDarkMode={isDarkMode} />
+          <GraphCard title="Baro: " sensor="barometer" sensorState={sensorState} isDarkMode={isDarkMode} />
+          <GraphCard title="Mag:" sensor="magnetometer" sensorState={sensorState} isDarkMode={isDarkMode} />
+        </ScrollView>
       </View>
-      <Text style={{ color: themeColors.text, fontWeight: "bold", fontSize: 20, padding: 10 }}>Sensors used: </Text>
-      <ScrollView style={{ borderRadius: 25 }}>
-        <GraphCard title="GPS: " sensor="gps" sensorState={sensorState} isDarkMode={isDarkMode} />
-        <GraphCard title="Accl: " sensor="accelerometer" sensorState={sensorState} isDarkMode={isDarkMode} />
-        <GraphCard title="Gyro: " sensor="gyroscope" sensorState={sensorState} isDarkMode={isDarkMode} />
-        <GraphCard title="Baro: " sensor="barometer" sensorState={sensorState} isDarkMode={isDarkMode} />
-        <GraphCard title="Mag:" sensor="magnetometer" sensorState={sensorState} isDarkMode={isDarkMode} />
-      </ScrollView>
-    </View>
+      <PotholeEditorModal
+        visible={editorVisible}
+        onClose={() => setEditorVisible(false)}
+        potholes={SensorUpload.dataBatch}
+        onSave={(parsed) => {
+          SensorUpload.dataBatch = parsed;
+          SensorUpload.persistToDisk();
+        }}
+      />
+    </>
   );
 }
 
@@ -528,7 +844,18 @@ function CustomDrawerContent(props) {
     inactiveText: isDarkMode ? '#aaaaaa' : 'gray',
   };
 
+  const [filesModalVisible, setFilesModalVisible] = useState(false);
+
+  const handleOpenFiles = () => {
+    setFilesModalVisible(true);
+  };
+
   return (
+    <>
+      <InternalFilesModal 
+        visible={filesModalVisible} 
+        onClose={() => setFilesModalVisible(false)} 
+      />
     <DrawerContentScrollView {...props} style={{ backgroundColor: themeColors.background }}>
       <View style={styles.logoContainer}>
         <Image
@@ -569,7 +896,15 @@ function CustomDrawerContent(props) {
         icon={({ color, size }) => (<AntDesign name="question-circle" size={24} color={state.index === 2 ? 'white' : themeColors.text} />)}
         onPress={() => props.navigation.navigate('Main', { screen: 'About Us' })}
       />
+      <DrawerItem
+        label="Internal Files"
+        inactiveTintColor={themeColors.inactiveText}
+        labelStyle={{ color: themeColors.text }}
+        icon={({ color, size }) => (<AntDesign name="folder1" size={24} color={themeColors.text} />)}
+        onPress={handleOpenFiles}
+      />
     </DrawerContentScrollView>
+    </>
   );
 }
 
