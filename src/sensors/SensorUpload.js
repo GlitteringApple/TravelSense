@@ -1,3 +1,7 @@
+import { File, Directory, Paths } from 'expo-file-system';
+
+const DATA_FOLDER = 'ArchivedData';
+
 class SensorUpload {
     constructor() {
         this.dataBatch = [];
@@ -146,10 +150,40 @@ class SensorUpload {
 
             console.log(`SensorUpload: Successfully uploaded ${payload.data.length} records`);
             this.clearBatch(); // Only clear if server confirmed receipt
+            await this.persistToDisk(); // Clear local file too
             return true;
         } catch (error) {
             console.error('SensorUpload: Error uploading sensor data:', error.message);
             throw error; // Rethrow so the UI can catch it
+        }
+    }
+
+    async persistToDisk() {
+        try {
+            const dir = new Directory(Paths.document, DATA_FOLDER);
+            if (!dir.exists) {
+                await dir.create();
+            }
+            const file = new File(Paths.document, DATA_FOLDER, 'sensor_data.json');
+            await file.write(JSON.stringify(this.dataBatch, null, 2));
+            console.log(`SensorUpload: Data persisted to disk in /${DATA_FOLDER}`);
+        } catch (error) {
+            console.error('SensorUpload: Failed to persist to disk:', error);
+        }
+    }
+
+    async loadFromDisk() {
+        try {
+            const file = new File(Paths.document, DATA_FOLDER, 'sensor_data.json');
+            if (file.exists) {
+                const content = await file.text();
+                if (content && content.trim().startsWith('[')) {
+                    this.dataBatch = JSON.parse(content);
+                    console.log(`SensorUpload: Loaded ${this.dataBatch.length} records from disk`);
+                }
+            }
+        } catch (error) {
+            console.warn('SensorUpload: Failed to load from disk:', error);
         }
     }
 }

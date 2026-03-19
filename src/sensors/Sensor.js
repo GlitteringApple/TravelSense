@@ -1,11 +1,12 @@
 import { Accelerometer, Gyroscope, Magnetometer, Barometer } from 'expo-sensors';
 import * as Location from 'expo-location';
 import { useEffect, useState, useRef } from 'react';
+import { NativeModules, NativeEventEmitter, AppState } from 'react-native';
 import SensorUpload from './SensorUpload';
 
 const DATA_LENGTH = 500;
 
-export function useSensorData() {
+export function useSensorData(isPaused = false) {
   const [sensorState, setSensorState] = useState({
     data: {
       gps: { latitude: 0, longitude: 0, speed: 0 },
@@ -27,8 +28,75 @@ export function useSensorData() {
   const latestData = useRef(sensorState.data);
   const currentHistory = useRef(sensorState.history);
 
+  const syncHistoryFromBatch = () => {
+    const GRAPH_HEIGHT = 100;
+    const batch = SensorUpload.dataBatch;
+    if (batch.length === 0) return;
+
+    // Get the last DATA_LENGTH points from the batch
+    const recentPoints = batch.slice(-DATA_LENGTH);
+    const newHistory = {
+      gps: [Array(DATA_LENGTH).fill(0), Array(DATA_LENGTH).fill(0)],
+      accelerometer: [Array(DATA_LENGTH).fill(0), Array(DATA_LENGTH).fill(0), Array(DATA_LENGTH).fill(0)],
+      gyroscope: [Array(DATA_LENGTH).fill(0), Array(DATA_LENGTH).fill(0), Array(DATA_LENGTH).fill(0)],
+      barometer: [Array(DATA_LENGTH).fill(0)],
+      magnetometer: [Array(DATA_LENGTH).fill(0), Array(DATA_LENGTH).fill(0), Array(DATA_LENGTH).fill(0)],
+    };
+
+    recentPoints.forEach((point, idx) => {
+      const pos = DATA_LENGTH - recentPoints.length + idx;
+      
+      newHistory.accelerometer[0][pos] = ((point.accelerometer_x + 2) / 4) * GRAPH_HEIGHT;
+      newHistory.accelerometer[1][pos] = ((point.accelerometer_y + 2) / 4) * GRAPH_HEIGHT;
+      newHistory.accelerometer[2][pos] = ((point.accelerometer_z + 2) / 4) * GRAPH_HEIGHT;
+
+      newHistory.gyroscope[0][pos] = ((point.gyroscope_x + 8) / 16) * GRAPH_HEIGHT;
+      newHistory.gyroscope[1][pos] = ((point.gyroscope_y + 8) / 16) * GRAPH_HEIGHT;
+      newHistory.gyroscope[2][pos] = ((point.gyroscope_z + 8) / 16) * GRAPH_HEIGHT;
+
+      newHistory.magnetometer[0][pos] = ((point.magnetometer_x + 100) / 200) * GRAPH_HEIGHT;
+      newHistory.magnetometer[1][pos] = ((point.magnetometer_y + 100) / 200) * GRAPH_HEIGHT;
+      newHistory.magnetometer[2][pos] = ((point.magnetometer_z + 100) / 200) * GRAPH_HEIGHT;
+
+      newHistory.barometer[0][pos] = (point.barometer / 1100) * GRAPH_HEIGHT;
+
+      newHistory.gps[0][pos] = ((point.gps_latitude + 90) / 180) * GRAPH_HEIGHT;
+      newHistory.gps[1][pos] = ((point.gps_longitude + 180) / 360) * GRAPH_HEIGHT;
+    });
+
+    currentHistory.current = newHistory;
+    setSensorState(prev => ({ ...prev, history: newHistory }));
+  };
+
   useEffect(() => {
-    let accelSub, gyroSub, magSub, baroSub, locationWatcher;
+    const handleAppStateChange = async (nextAppState) => {
+      if (nextAppState === 'active') {
+        console.log('App in foreground: Syncing data from background recording');
+        await SensorUpload.loadFromDisk();
+        syncHistoryFromBatch();
+      }
+    };
+
+    const sub = AppState.addEventListener('change', handleAppStateChange);
+    syncHistoryFromBatch();
+    return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
+    if (isPaused) return;
+
+    let accelSub, gyroSub, magSub, baroSub, locationWatcher, nativeSub;
+    const eventEmitter = new NativeEventEmitter(NativeModules.TravelSenseModule);
+
+    nativeSub = eventEmitter.addListener('onSensorData', (event) => {
+      // Prioritise native readings in background as expo-sensors often pause
+      if (latestData.current) {
+        if (event.accelerometer) latestData.current.accelerometer = event.accelerometer;
+        if (event.gyroscope) latestData.current.gyroscope = event.gyroscope;
+        if (event.magnetometer) latestData.current.magnetometer = event.magnetometer;
+        if (event.barometer) latestData.current.barometer = { pressure: event.barometer };
+      }
+    });
 
     Accelerometer.setUpdateInterval(5); // 200 Hz
     Gyroscope.setUpdateInterval(5); // 200 Hz
@@ -41,8 +109,17 @@ export function useSensorData() {
     baroSub = Barometer.addListener(data => { latestData.current.barometer = { pressure: data.pressure }; });
 
     (async () => {
-      let { status } = await Location.requestForegroundPermissionsAsync();
-      if (status === 'granted') {
+      const { status: foreStatus } = await Location.requestForegroundPermissionsAsync();
+      if (foreStatus === 'granted') {
+        // Background location is required for recording when app is minimized
+        await Location.requestBackgroundPermissionsAsync();
+        
+        // Activity recognition is required for exercise/tracking apps
+        if (NativeModules.TravelSenseModule && NativeModules.TravelSenseModule.requestActivityRecognitionPermission) {
+          await NativeModules.TravelSenseModule.requestActivityRecognitionPermission()
+            .catch(err => console.log('Activity permission request failed', err));
+        }
+
         locationWatcher = await Location.watchPositionAsync(
           { accuracy: Location.Accuracy.Balanced, timeInterval: 1000, distanceInterval: 0 },
           loc => {
@@ -56,25 +133,18 @@ export function useSensorData() {
       }
     })();
 
-    // Start auto upload for sensor data
-    //SensorUpload.startAutoUpload();
-
     // Gravity alignment variables (Low Pass Filter)
-    const gravity = { x: 0, y: 0, z: 0 }; // Initialize to zero to let it learn baseline
-    const alpha = 0.1; // Filter responsiveness
+    const gravity = { x: 0, y: 0, z: 0 }; 
+    const alpha = 0.1; 
 
     const tick = setInterval(() => {
       const nextData = { ...latestData.current };
 
-      // DEBUG: Log the first few raw accel values to console (optional)
-      // if (prev.tick % 100 === 0) console.log('Raw Accel:', nextData.accelerometer);
-
-      // Gravity Alignment (Separating Gravity from Linear Acceleration)
+      // Gravity Alignment
       gravity.x = alpha * nextData.accelerometer.x + (1 - alpha) * gravity.x;
       gravity.y = alpha * nextData.accelerometer.y + (1 - alpha) * gravity.y;
       gravity.z = alpha * nextData.accelerometer.z + (1 - alpha) * gravity.z;
 
-      // Linear acceleration (Gravity-Aligned jerk data)
       const linearAccel = {
         x: nextData.accelerometer.x - gravity.x,
         y: nextData.accelerometer.y - gravity.y,
@@ -119,12 +189,13 @@ export function useSensorData() {
 
       currentHistory.current = nextHistory;
 
-      // Add batched data (using gravity-aligned linear acceleration)
+      /* 
       SensorUpload.addData({
         timestamp: new Date().toISOString(),
         ...nextData,
-        accelerometer: linearAccel // Pothole detection is best with linear accel
+        accelerometer: linearAccel 
       });
+      */
 
       setSensorState(prev => ({
         data: { ...nextData, accelerometer: linearAccel },
@@ -139,11 +210,10 @@ export function useSensorData() {
       magSub && magSub.remove();
       baroSub && baroSub.remove();
       locationWatcher && locationWatcher.remove();
+      nativeSub && nativeSub.remove();
       clearInterval(tick);
-      SensorUpload.stopAutoUpload();
     };
-  }, []);
+  }, [isPaused]);
 
   return sensorState;
 }
-

@@ -13,11 +13,26 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "UIFileSharingEnabled": true,
+        "LSSupportsOpeningDocumentsInPlace": true
+      }
     },
     "android": {
       "permissions": [
-        "HIGH_SAMPLING_RATE_SENSORS"
+        "HIGH_SAMPLING_RATE_SENSORS",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "FOREGROUND_SERVICE_SPECIAL_USE",
+        "POST_NOTIFICATIONS",
+        "WAKE_LOCK",
+        "ACTIVITY_RECOGNITION",
+        "FOREGROUND_SERVICE_HEALTH",
+        "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
       ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",

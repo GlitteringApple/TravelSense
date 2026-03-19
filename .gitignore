@@ -38,10 +38,21 @@ yarn-error.*
 
 # generated native folders
 /ios
-/android
 /.vscode
 /.idea
 /.gradle
 eas.json
 package-lock.json
 .env
+
+# Android build artifacts and state (to allow tracking native source)
+/android/.gradle
+/android/build
+/android/app/build
+/android/local.properties
+/android/.idea
+/android/.kotlin
+/android/*.iml
+/android/app/*.iml
+/android/app/.cxx
+/android/app/.test

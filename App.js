@@ -1,6 +1,7 @@
 import {
   View,
   Text,
+  Modal,
   Image,
   ImageBackground,
   ScrollView,
@@ -14,7 +15,9 @@ import {
   Dimensions,
   Keyboard,
   BackHandler,
-  Switch
+  Switch,
+  NativeModules,
+  NativeEventEmitter
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import ButtonRound from "./components/ButtonRound"
@@ -27,7 +30,7 @@ import {
   useNavigation,
 } from '@react-navigation/native';
 import { createBottomTabNavigator, useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -42,7 +45,7 @@ import {
 } from '@react-navigation/drawer';
 import Svg, { Polygon } from 'react-native-svg';
 import * as Progress from 'react-native-progress';
-import MapView, { PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { PROVIDER_GOOGLE, Marker, Callout } from 'react-native-maps';
 import { Accelerometer, Gyroscope } from "expo-sensors";
 import {
   Canvas,
@@ -61,17 +64,20 @@ import AntDesign from '@expo/vector-icons/AntDesign';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import Feather from '@expo/vector-icons/Feather';
 import FontAwesome5 from '@expo/vector-icons/FontAwesome5';
+import * as DocumentPicker from 'expo-document-picker';
 
 /* ------------------ Screens ------------------ */
 
 const Stack = createNativeStackNavigator();
 
-function DrawerStack() {
+function DrawerStack({ elapsedTime, isPaused, setIsPaused }) {
   return (
     <Stack.Navigator screenOptions={{
       animation: 'default', headerShown: true
     }}>
-      <Stack.Screen name="Home" component={Tabs} options={{ headerShown: false }} />
+      <Stack.Screen name="Home" options={{ headerShown: false }}>
+        {(props) => <Tabs {...props} elapsedTime={elapsedTime} isPaused={isPaused} setIsPaused={setIsPaused} />}
+      </Stack.Screen>
       <Stack.Screen name="Settings" component={SettingsScreen} />
       <Stack.Screen name="About Us" component={AboutUsScreen} />
     </Stack.Navigator>
@@ -157,10 +163,50 @@ function HomeScreen() {
   });
 
   const [barStyle, setBarStyle] = useState('light-content');
+  const { globalPotholes } = useSettings();
+  const [zoomLevel, setZoomLevel] = useState(0.01);
+  const HIDE_THRESHOLD = 0.5; // If longitudeDelta > 0.5, hide all potholes
 
   const onRunFunction = (barStyle) => {
     setBarStyle(barStyle);
   };
+
+  // Basic grid-based clustering
+  const getClusteredPotholes = () => {
+    if (!globalPotholes || globalPotholes.length === 0 || zoomLevel > HIDE_THRESHOLD) return [];
+
+    // Dynamically adjust grid size based on zoom level. 
+    // Closer zoom = smaller grid cells = more individual markers
+    const gridSize = zoomLevel / 10;
+
+    const clusters = {};
+
+    globalPotholes.forEach((pothole) => {
+      // Create a grid key by rounding coordinates
+      const gridLat = Math.round(pothole.gps_latitude / gridSize) * gridSize;
+      const gridLng = Math.round(pothole.gps_longitude / gridSize) * gridSize;
+      const key = `${gridLat.toFixed(5)},${gridLng.toFixed(5)}`;
+
+      if (!clusters[key]) {
+        clusters[key] = {
+          ...pothole,
+          count: 1,
+          maxSeverity: pothole.severity
+        };
+      } else {
+        clusters[key].count += 1;
+        // Keep the highest severity in the cluster
+        if (pothole.severity > clusters[key].maxSeverity) {
+          clusters[key].maxSeverity = pothole.severity;
+          clusters[key].severity = pothole.severity;
+        }
+      }
+    });
+
+    return Object.values(clusters);
+  };
+
+  const clusteredPotholes = useMemo(() => getClusteredPotholes(), [globalPotholes, zoomLevel]);
 
   //Fullscreen component
   const navigation = useNavigation();
@@ -170,9 +216,43 @@ function HomeScreen() {
     });
     return unsubscribe;
   }, [navigation]);
+
   return (
     <View style={styles.fullscreen}>
-      <MapView provider={PROVIDER_GOOGLE} style={StyleSheet.absoluteFillObject} />
+      <MapView
+        provider={PROVIDER_GOOGLE}
+        style={StyleSheet.absoluteFillObject}
+        showsUserLocation={true}
+        followsUserLocation={true}
+        onRegionChangeComplete={(region) => {
+          setZoomLevel(region.longitudeDelta);
+        }}
+      >
+        {clusteredPotholes.map((pothole, index) => (
+          <Marker
+            key={index}
+            coordinate={{ latitude: pothole.gps_latitude, longitude: pothole.gps_longitude }}
+          >
+            {/* <View style={{ backgroundColor: 'transparent', alignItems: 'center', justifyContent: 'center', width: 38, height: 38 }}>
+              <Text style={{ fontSize: 24 }}>🕳️</Text>
+              {pothole.count > 1 && (
+                <View style={{ backgroundColor: 'red', borderRadius: 10, paddingHorizontal: 4, position: 'absolute', top: -5, right: -10 }}>
+                  <Text style={{ color: 'white', fontSize: 10, fontWeight: 'bold' }}>{pothole.count}</Text>
+                </View>
+              )}
+            </View> */}
+            {/* <Callout tooltip>
+              <View style={{ backgroundColor: 'white', borderRadius: 10, padding: 10, minWidth: 150, elevation: 5 }}>
+                <Text style={{ fontWeight: 'bold', fontSize: 16, marginBottom: 5 }}>Pothole Cluster</Text>
+                <Text>Count: {pothole.count}</Text>
+                <Text>Max Jolt: {pothole.maxSeverity.toFixed(2)} G</Text>
+                <Text style={{ fontSize: 10, color: 'gray', marginTop: 5 }}>Lat: {pothole.gps_latitude.toFixed(5)}</Text>
+                <Text style={{ fontSize: 10, color: 'gray' }}>Lng: {pothole.gps_longitude.toFixed(5)}</Text>
+              </View>
+            </Callout> */}
+          </Marker>
+        ))}
+      </MapView>
       <StatusBar translucent backgroundColor="transparent" barStyle={barStyle} />
       {/* <ImageBackground source={mapImg} style={{ flex: 1 }}> */}
       <View style={{ flex: 1 }}>
@@ -208,21 +288,77 @@ function HomeScreen() {
 
 import SensorUpload from './src/sensors/SensorUpload';
 
-function DataScreen() {
-  const padding = 15;
-  const tabBarHeight = useBottomTabBarHeight();
-  const sensorState = useSensorData();
-  const { isDarkMode, colorTheme } = 0;
-  const [isUploading, setIsUploading] = useState(false);
-  const [elapsedTime, setElapsedTime] = useState(0);
-  const [localPotholes, setLocalPotholes] = useState([]);
+/* ---------- Pothole Editor Modal ---------- */
+function PotholeEditorModal({ visible, onClose, potholes, onSave }) {
+  const [text, setText] = useState('');
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    const timer = setInterval(() => {
-      setElapsedTime(prev => prev + 1);
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
+    if (visible) {
+      setText(JSON.stringify(potholes, null, 2));
+      setError('');
+    }
+  }, [visible]);
+
+  const handleSave = () => {
+    try {
+      const parsed = JSON.parse(text);
+      onSave(parsed);
+      onClose();
+    } catch (e) {
+      setError('Invalid JSON: ' + e.message);
+    }
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+      <View style={{ flex: 1, backgroundColor: '#1a1a2e' }}>
+        {/* Header */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', padding: 16, paddingTop: 48, borderBottomWidth: 1, borderBottomColor: '#333' }}>
+          <Text style={{ flex: 1, color: '#e0e0e0', fontSize: 18, fontWeight: 'bold' }}>📋 Sensor Data Editor</Text>
+          <Pressable onPress={onClose} style={{ padding: 8 }}>
+            <MaterialIcons name="close" size={24} color="#e0e0e0" />
+          </Pressable>
+        </View>
+        {/* File hint */}
+        <Text style={{ color: '#888', fontSize: 11, paddingHorizontal: 16, paddingTop: 8 }}>
+          Saved to: sensor_data.json (app documents folder)
+        </Text>
+        {/* Editor */}
+        <ScrollView style={{ flex: 1, padding: 16 }} keyboardShouldPersistTaps="handled">
+          <TextInput
+            multiline
+            value={text}
+            onChangeText={setText}
+            style={{ fontFamily: 'monospace', color: '#a8ff78', fontSize: 12, lineHeight: 18, backgroundColor: '#0a0a1a', padding: 12, borderRadius: 8, minHeight: 400 }}
+            autoCapitalize="none"
+            autoCorrect={false}
+            spellCheck={false}
+          />
+        </ScrollView>
+        {/* Validation error */}
+        {error ? <Text style={{ color: '#ff6b6b', paddingHorizontal: 16, paddingBottom: 4, fontSize: 12 }}>{error}</Text> : null}
+        {/* Actions */}
+        <View style={{ flexDirection: 'row', gap: 12, padding: 16, paddingBottom: 32 }}>
+          <Pressable onPress={onClose} style={{ flex: 1, padding: 14, borderRadius: 12, backgroundColor: '#333', alignItems: 'center' }}>
+            <Text style={{ color: '#e0e0e0', fontWeight: 'bold' }}>Cancel</Text>
+          </Pressable>
+          <Pressable onPress={handleSave} style={{ flex: 1, padding: 14, borderRadius: 12, backgroundColor: '#003CB3', alignItems: 'center' }}>
+            <Text style={{ color: 'white', fontWeight: 'bold' }}>Save</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function DataScreen({ elapsedTime, isPaused, setIsPaused }) {
+  const padding = 15;
+  const tabBarHeight = useBottomTabBarHeight();
+  const sensorState = useSensorData(isPaused);
+  const { isDarkMode, colorTheme, globalPotholes, setGlobalPotholes, savePotholes } = useSettings();
+  const [isUploading, setIsUploading] = useState(false);
+  const [editorVisible, setEditorVisible] = useState(false);
 
   const formatTime = (seconds) => {
     const hrs = Math.floor(seconds / 3600);
@@ -261,7 +397,7 @@ function DataScreen() {
   const handleFetchPotholes = async () => {
     try {
       const data = await SensorUpload.fetchPotholes();
-      setLocalPotholes(data);
+      await savePotholes(data);
       Alert.alert('Sync Complete', `Stored ${data.length} potholes locally.`);
     } catch (error) {
       Alert.alert('Sync Error', error.message);
@@ -280,68 +416,82 @@ function DataScreen() {
   const currentSpeed = Math.round(sensorState.data.gps.speed || 0);
 
   return (
-    <View style={[styles.screen, { padding: padding, backgroundColor: themeColors.background }]}>
-      <View style={{ backgroundColor: themeColors.card, borderRadius: 25, height: 150, overflow: 'hidden' }}>
-        <View style={{ backgroundColor: colorTheme, flexDirection: 'row' }}>
-          <Text style={{ color: 'white', fontWeight: 'bold', left: 12.5, fontSize: 17.5 }}>STATUS: TRAVELLING</Text>
-          <Svg height="23" width="100%" viewBox="0 0 20 2">
-            <Polygon
-              points="0,0 15,0 15,15 20,20"
-              fill={colorTheme}
-            />
-          </Svg>
-          <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 17.5, position: "absolute", right: 25 }}>AUTO: ON</Text>
-        </View>
+    <>
+      <View style={[styles.screen, { padding: padding, backgroundColor: themeColors.background }]}>
+        <View style={{ backgroundColor: themeColors.card, borderRadius: 25, height: 150, overflow: 'hidden' }}>
+          <View style={{ backgroundColor: isPaused ? '#ffae00' : 'lime', flexDirection: 'row' }}>
+            <Text style={{ color: 'white', fontWeight: 'bold', left: 12.5, fontSize: 17.5 }}>STATUS: {isPaused ? 'PAUSED' : 'TRAVELLING'}</Text>
+            <Svg height="23" width="100%" viewBox="0 0 20 2">
+              <Polygon
+                points="0,0 15,0 15,15 20,20"
+                fill={isPaused ? 'orange' : 'green'}
+              />
+            </Svg>
+            <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 17.5, position: "absolute", right: 25 }}>AUTO: {isPaused ? 'OFF' : 'ON'}</Text>
+          </View>
 
-        <View style={{ backgroundColor: themeColors.card, flex: 1, padding: padding }}>
-          <View style={{ flexDirection: "row" }}>
-            <Text style={{ color: themeColors.text, fontSize: 60, fontWeight: "bold", includeFontPadding: false, lineHeight: 50 }}>{currentSpeed}</Text>
-            <Text style={{ color: themeColors.text, textAlignVertical: "bottom", bottom: 0, marginLeft: 3 }}>km/h</Text>
-            <View style={{ flex: 1, flexDirection: "row", alignItems: "center", marginLeft: 5 }}>
-              <View>
-                <Text style={{ color: themeColors.text }}>RECORDING: </Text>
-                <Text style={{ color: themeColors.text }}>{formatTime(elapsedTime)}</Text>
-              </View>
-              <View style={{ flex: 1, flexDirection: "row", justifyContent: "space-evenly" }}>
-                <ButtonRound size={30} onPress={() => { }}>
-                  <FontAwesome5 name="pause" size={15} color={isDarkMode ? 'white' : 'black'} />
-                </ButtonRound>
-                <ButtonRound size={30} onPress={handleTestConnection}>
-                  <MaterialIcons name="storage" size={15} color={isDarkMode ? 'white' : 'black'} />
-                </ButtonRound>
-                <ButtonRound size={30} onPress={handleFetchPotholes}>
-                  <FontAwesome5 name="map-marker-alt" size={15} color={isDarkMode ? 'white' : 'black'} />
-                </ButtonRound>
-                <ButtonRound size={30} onPress={handleTriggerProcessing}>
-                  <MaterialIcons name="analytics" size={15} color={isDarkMode ? 'white' : 'black'} />
-                </ButtonRound>
-                <ButtonRound size={30} onPress={handleFlushData} disabled={isUploading}>
-                  {isUploading ? (
-                    <ActivityIndicator size="small" color={isDarkMode ? 'white' : 'black'} />
-                  ) : (
-                    <FontAwesome5 name="upload" size={15} color={isDarkMode ? 'white' : 'black'} />
-                  )}
-                </ButtonRound>
+          <View style={{ backgroundColor: themeColors.card, flex: 1, padding: padding }}>
+            <View style={{ flexDirection: "row" }}>
+              <Text style={{ color: themeColors.text, fontSize: 60, fontWeight: "bold", includeFontPadding: false, lineHeight: 50 }}>{currentSpeed}</Text>
+              <Text style={{ color: themeColors.text, textAlignVertical: "bottom", bottom: 0, marginLeft: 3 }}>km/h</Text>
+              <View style={{ flex: 1, flexDirection: "row", alignItems: "center", marginLeft: 5 }}>
+                <View>
+                  <Text style={{ color: themeColors.text }}>RECORDING: </Text>
+                  <Text style={{ color: themeColors.text }}>{formatTime(elapsedTime)}</Text>
+                </View>
+                <View style={{ flex: 1, flexDirection: "row", justifyContent: "space-evenly" }}>
+                  <ButtonRound size={30} onPress={() => setIsPaused(!isPaused)}>
+                    <FontAwesome5 name={isPaused ? "play" : "pause"} size={15} color={isDarkMode ? 'white' : 'black'} />
+                  </ButtonRound>
+                  <ButtonRound size={30} onPress={handleTestConnection}>
+                    <MaterialIcons name="storage" size={15} color={isDarkMode ? 'white' : 'black'} />
+                  </ButtonRound>
+                  <ButtonRound size={30} onPress={handleFetchPotholes}>
+                    <FontAwesome5 name="map-marker-alt" size={15} color={isDarkMode ? 'white' : 'black'} />
+                  </ButtonRound>
+                  <ButtonRound size={30} onPress={handleTriggerProcessing}>
+                    <MaterialIcons name="analytics" size={15} color={isDarkMode ? 'white' : 'black'} />
+                  </ButtonRound>
+                  <ButtonRound size={30} onPress={() => setEditorVisible(true)}>
+                    <Feather name="eye" size={15} color={isDarkMode ? 'white' : 'black'} />
+                  </ButtonRound>
+                  <ButtonRound size={30} onPress={handleFlushData} disabled={isUploading}>
+                    {isUploading ? (
+                      <ActivityIndicator size="small" color={isDarkMode ? 'white' : 'black'} />
+                    ) : (
+                      <FontAwesome5 name="upload" size={15} color={isDarkMode ? 'white' : 'black'} />
+                    )}
+                  </ButtonRound>
+                </View>
               </View>
             </View>
-          </View>
-          <View style={{ flexDirection: "row", alignItems: "center", bottom: padding, left: padding, position: "absolute" }}>
-            <Text style={{ color: themeColors.text, position: "relative" }}>CONFIDENCE:</Text>
-            <Progress.Bar progress={1} animated={false} width={null} borderRadius={0} borderWidth={0} color={"red"} unfilledColor={"pink"} style={{ alignSelf: "center", flex: 1, marginLeft: 10 }} />
-            <Progress.Bar progress={1} animated={false} width={null} borderRadius={0} borderWidth={0} color={"gold"} unfilledColor={"lightgoldenrodyellow"} style={{ alignSelf: "center", flex: 1 }} />
-            <Progress.Bar progress={0.5} animated={false} width={null} borderRadius={0} borderWidth={0} color={"green"} unfilledColor={"lightgreen"} style={{ alignSelf: "center", flex: 1 }} />
+            <View style={{ flexDirection: "row", alignItems: "center", bottom: padding, left: padding, position: "absolute" }}>
+              <Text style={{ color: themeColors.text, position: "relative" }}>CONFIDENCE:</Text>
+              <Progress.Bar progress={1} animated={false} width={null} borderRadius={0} borderWidth={0} color={"red"} unfilledColor={"pink"} style={{ alignSelf: "center", flex: 1, marginLeft: 10 }} />
+              <Progress.Bar progress={1} animated={false} width={null} borderRadius={0} borderWidth={0} color={"gold"} unfilledColor={"lightgoldenrodyellow"} style={{ alignSelf: "center", flex: 1 }} />
+              <Progress.Bar progress={0.5} animated={false} width={null} borderRadius={0} borderWidth={0} color={"green"} unfilledColor={"lightgreen"} style={{ alignSelf: "center", flex: 1 }} />
+            </View>
           </View>
         </View>
+        <Text style={{ color: themeColors.text, fontWeight: "bold", fontSize: 20, padding: 10 }}>Sensors used: </Text>
+        <ScrollView style={{ borderRadius: 25 }}>
+          <GraphCard title="GPS: " sensor="gps" sensorState={sensorState} isDarkMode={isDarkMode} />
+          <GraphCard title="Accl: " sensor="accelerometer" sensorState={sensorState} isDarkMode={isDarkMode} />
+          <GraphCard title="Gyro: " sensor="gyroscope" sensorState={sensorState} isDarkMode={isDarkMode} />
+          <GraphCard title="Baro: " sensor="barometer" sensorState={sensorState} isDarkMode={isDarkMode} />
+          <GraphCard title="Mag:" sensor="magnetometer" sensorState={sensorState} isDarkMode={isDarkMode} />
+        </ScrollView>
       </View>
-      <Text style={{ color: themeColors.text, fontWeight: "bold", fontSize: 20, padding: 10 }}>Sensors used: </Text>
-      <ScrollView style={{ borderRadius: 25 }}>
-        <GraphCard title="GPS: " sensor="gps" sensorState={sensorState} isDarkMode={isDarkMode} />
-        <GraphCard title="Accl: " sensor="accelerometer" sensorState={sensorState} isDarkMode={isDarkMode} />
-        <GraphCard title="Gyro: " sensor="gyroscope" sensorState={sensorState} isDarkMode={isDarkMode} />
-        <GraphCard title="Baro: " sensor="barometer" sensorState={sensorState} isDarkMode={isDarkMode} />
-        <GraphCard title="Mag:" sensor="magnetometer" sensorState={sensorState} isDarkMode={isDarkMode} />
-      </ScrollView>
-    </View>
+      <PotholeEditorModal
+        visible={editorVisible}
+        onClose={() => setEditorVisible(false)}
+        potholes={SensorUpload.dataBatch}
+        onSave={(parsed) => {
+          SensorUpload.dataBatch = parsed;
+          SensorUpload.persistToDisk();
+        }}
+      />
+    </>
   );
 }
 
@@ -367,7 +517,8 @@ function SettingsScreen() {
     engineType,
     setEngineType,
     colorTheme,
-    setColorTheme,
+    storageIntegrationEnabled,
+    toggleStorageIntegration,
   } = useSettings();
 
   const insets = useSafeAreaInsets();
@@ -425,6 +576,19 @@ function SettingsScreen() {
               thumbColor={'#ffffff'}
             />
           </View>
+
+          <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: themeColors.border }]}>
+            <View>
+              <Text style={[styles.settingTitle, { color: themeColors.text }]}>Storage Integration</Text>
+              <Text style={[styles.settingDesc, { color: themeColors.textSecondary }]}>Show app files in system Files app</Text>
+            </View>
+            <Switch
+              value={storageIntegrationEnabled}
+              onValueChange={toggleStorageIntegration}
+              trackColor={{ false: '#767577', true: colorTheme }}
+              thumbColor={'#ffffff'}
+            />
+          </View>
         </View>
 
         <Text style={[styles.sectionTitle, { color: themeColors.textSecondary }]}>VEHICLE</Text>
@@ -474,7 +638,7 @@ const Tab = createBottomTabNavigator();
 //Dummy component for navigator tabs.
 const Empty = () => <View />;
 
-function Tabs() {
+function Tabs({ elapsedTime, isPaused, setIsPaused }) {
 
   const onPressTravelogue = () => {
     console.log('Travelogue button pressed');
@@ -493,21 +657,16 @@ function Tabs() {
         }} />
       <Tab.Screen
         name="My Data"
-        component={DataScreen}
         options={{
           tabBarIcon: ({ color, size }) => (
             <AntDesign name="database" size={24} color="black" />
           )
-        }} />
+        }}>
+          {(props) => <DataScreen {...props} elapsedTime={elapsedTime} isPaused={isPaused} setIsPaused={setIsPaused} />}
+      </Tab.Screen>
       <Tab.Screen
         name="Travelogue"
         component={TravelogueScreen}
-        // listeners={{
-        //   tabPress: e => {
-        //     e.preventDefault();
-        //     onPressTravelogue();
-        //   }
-        // }}
         options={{
           tabBarIcon: ({ color, size }) => (
             <AntDesign name="book" size={24} color="black" />
@@ -526,6 +685,30 @@ function CustomDrawerContent(props) {
     background: isDarkMode ? '#1e1e1e' : '#ffffff',
     text: isDarkMode ? '#ffffff' : 'black',
     inactiveText: isDarkMode ? '#aaaaaa' : 'gray',
+  };
+
+  const openFilePicker = async () => {
+    try {
+      // Use our custom native module if available (Android)
+      if (NativeModules.TravelSensePicker) {
+         const result = await NativeModules.TravelSensePicker.openPickerAtRoot();
+         console.log('Selected file (native):', result);
+         return;
+      }
+
+      // Fallback for iOS or if native module not found
+      const result = await DocumentPicker.getDocumentAsync({
+        type: '*/*',
+        copyToCacheDirectory: true,
+      });
+      if (result.assets) {
+         console.log('Selected file:', result.assets[0].uri);
+      }
+    } catch (err) {
+      if (err.code !== 'PICKER_CANCELLED') {
+        console.warn('File picker error:', err);
+      }
+    }
   };
 
   return (
@@ -569,6 +752,14 @@ function CustomDrawerContent(props) {
         icon={({ color, size }) => (<AntDesign name="question-circle" size={24} color={state.index === 2 ? 'white' : themeColors.text} />)}
         onPress={() => props.navigation.navigate('Main', { screen: 'About Us' })}
       />
+      <DrawerItem
+        label="Open Files"
+        activeTintColor="white"
+        inactiveTintColor={themeColors.inactiveText}
+        labelStyle={{ color: themeColors.text }}
+        icon={({ color, size }) => (<AntDesign name="folderopen" size={24} color={themeColors.text} />)}
+        onPress={openFilePicker}
+      />
     </DrawerContentScrollView>
   );
 }
@@ -578,6 +769,84 @@ function CustomDrawerContent(props) {
 const Drawer = createDrawerNavigator();
 
 export default function App({ navigation }) {
+  const [elapsedTime, setElapsedTime] = useState(0);
+  const [isPaused, setIsPaused] = useState(false);
+  const skipNextUpdate = useRef(false);
+  const serviceStarted = useRef(false);
+
+  useEffect(() => {
+    SensorUpload.loadFromDisk();
+    if (!NativeModules.TravelSenseModule) return;
+
+    const eventEmitter = new NativeEventEmitter(NativeModules.TravelSenseModule);
+    
+    const pauseSub = eventEmitter.addListener('onNotificationPause', (event) => {
+      console.log("onNotificationPause event received:", event);
+      skipNextUpdate.current = true;
+      setIsPaused(event.value);
+    });
+
+    const tickSub = eventEmitter.addListener('onServiceTick', (event) => {
+      // console.log("onServiceTick event received:", event);
+      if (event && event.value !== undefined) {
+        setElapsedTime(event.value);
+      }
+    });
+
+    const exitSub = eventEmitter.addListener('onNotificationExit', async () => {
+      console.log("onNotificationExit event received");
+      await SensorUpload.persistToDisk();
+      if (NativeModules.TravelSenseModule) {
+        NativeModules.TravelSenseModule.exitApp();
+      }
+    });
+
+    return () => {
+      pauseSub.remove();
+      tickSub.remove();
+      exitSub.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    const checkBatteryOptimizations = async () => {
+      if (NativeModules.TravelSenseModule && NativeModules.TravelSenseModule.isBatteryOptimizationIgnored) {
+        const isIgnored = await NativeModules.TravelSenseModule.isBatteryOptimizationIgnored();
+        if (!isIgnored) {
+          Alert.alert(
+            'Battery Optimization',
+            'To ensure reliable background recording, please disable battery optimization for TravelSense.',
+            [
+              { text: 'Later', style: 'cancel' },
+              { 
+                text: 'Open Settings', 
+                onPress: () => NativeModules.TravelSenseModule.requestBatteryOptimizationExemption() 
+              },
+            ]
+          );
+        }
+      }
+    };
+    checkBatteryOptimizations();
+  }, []);
+
+  useEffect(() => {
+    if (!isPaused && !serviceStarted.current && NativeModules.TravelSenseModule) {
+      console.log("Starting Foreground Service from App Root");
+      serviceStarted.current = true;
+      NativeModules.TravelSenseModule.startRecordingService(elapsedTime, false);
+    }
+  }, [isPaused]);
+
+  useEffect(() => {
+    if (skipNextUpdate.current) {
+      skipNextUpdate.current = false;
+      return;
+    }
+    if (elapsedTime > 0 && NativeModules.TravelSenseModule) {
+      NativeModules.TravelSenseModule.updateServiceState(elapsedTime, isPaused);
+    }
+  }, [isPaused]);
 
   useEffect(() => {
     const backAction = () => {
@@ -613,7 +882,9 @@ export default function App({ navigation }) {
             headerShown: false, drawerType: "front", detachInactiveScreens: false,
           }}
         >
-          <Drawer.Screen name="Main" component={DrawerStack}></Drawer.Screen>
+          <Drawer.Screen name="Main">
+            {(props) => <DrawerStack {...props} elapsedTime={elapsedTime} isPaused={isPaused} setIsPaused={setIsPaused} />}
+          </Drawer.Screen>
         </Drawer.Navigator>
       </NavigationContainer>
     </SettingsProvider>

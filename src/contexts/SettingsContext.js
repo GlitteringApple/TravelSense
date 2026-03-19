@@ -7,9 +7,11 @@ export const SettingsProvider = ({ children }) => {
     const [notificationsEnabled, setNotificationsEnabled] = useState(true);
     const [engineType, setEngineType] = useState('petrol'); // petrol, diesel, electric
     const [colorTheme, setColorTheme] = useState('#003CB3'); // Default blue
+    const [storageIntegrationEnabled, setStorageIntegrationEnabled] = useState(true);
 
     const toggleDarkMode = () => setIsDarkMode((prev) => !prev);
     const toggleNotifications = () => setNotificationsEnabled((prev) => !prev);
+    const toggleStorageIntegration = () => setStorageIntegrationEnabled((prev) => !prev);
 
     return (
         <SettingsContext.Provider
@@ -22,6 +24,8 @@ export const SettingsProvider = ({ children }) => {
                 setEngineType,
                 colorTheme,
                 setColorTheme,
+                storageIntegrationEnabled,
+                toggleStorageIntegration,
             }}
         >
             {children}
