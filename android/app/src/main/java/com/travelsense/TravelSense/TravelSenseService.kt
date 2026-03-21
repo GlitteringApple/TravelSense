@@ -8,6 +8,8 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.os.BatteryManager
+import android.content.IntentFilter
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -33,6 +35,8 @@ class TravelSenseService : Service(), SensorEventListener {
     private val CHANNEL_ID = "TravelSenseChannel"
     private var isPaused = false
     private var elapsedTime = 0
+    private var batteryThreshold = 0
+    private var autoPausedDueToBattery = false
     private var wakeLock: PowerManager.WakeLock? = null
     
     private lateinit var sensorManager: SensorManager
@@ -61,6 +65,7 @@ class TravelSenseService : Service(), SensorEventListener {
     private val dataBuffer = JSONArray()
     private val DATA_FILE_NAME = "ArchivedData/sensor_data.json"
     private var lastWriteTime = 0L
+    private val GRAVITY_SEC = 9.80665f
 
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
@@ -75,18 +80,51 @@ class TravelSenseService : Service(), SensorEventListener {
     private lateinit var serviceHandler: Handler
     private lateinit var serviceThread: HandlerThread
 
+    private var startTimeMillis = 0L
+
+    private fun checkBatteryAndAutoPause() {
+        if (batteryThreshold <= 0) return
+        
+        val intentFilter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+        val batteryStatus = registerReceiver(null, intentFilter)
+        
+        val level = batteryStatus?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale = batteryStatus?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+        
+        if (level != -1 && scale != -1) {
+            val batteryPct = (level * 100) / scale
+            if (batteryPct < batteryThreshold) {
+                if (!isPaused && !autoPausedDueToBattery) {
+                    isPaused = true
+                    autoPausedDueToBattery = true
+                    Log.d("TravelSenseService", "Auto-pausing due to low battery: $batteryPct%")
+                    sendEventToJS("onBatteryAutoPause", batteryPct)
+                    updateNotification()
+                }
+            } else {
+                autoPausedDueToBattery = false
+            }
+        }
+    }
+
     private val ticker = object : Runnable {
         override fun run() {
+            checkBatteryAndAutoPause()
             if (!isPaused) {
-                elapsedTime++
+                // Authoritative time calculation against real system time
+                val currentRealTime = System.currentTimeMillis()
+                elapsedTime = ((currentRealTime - startTimeMillis) / 1000).toInt()
+                
                 sendEventToJS("onServiceTick", elapsedTime)
                 updateNotification()
-                recordPointToBuffer() // 1Hz guaranteed record
+                recordPointToBuffer() // authoratative 1Hz record
                 
                 // Periodically flush to disk (every 5 seconds)
-                if (System.currentTimeMillis() - lastWriteTime > 5000) {
+                if (currentRealTime - lastWriteTime > 5000) {
                     flushBufferToDisk()
                 }
+            } else {
+                startTimeMillis = System.currentTimeMillis() - (elapsedTime * 1000L)
             }
             serviceHandler.postDelayed(this, 1000)
         }
@@ -103,9 +141,9 @@ class TravelSenseService : Service(), SensorEventListener {
                 put("timestamp", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).format(Date()))
                 put("gps_latitude", if (lastLat != 0.0) lastLat else null)
                 put("gps_longitude", if (lastLng != 0.0) lastLng else null)
-                put("accelerometer_x", lastAccel[0] - gravityX)
-                put("accelerometer_y", lastAccel[1] - gravityY)
-                put("accelerometer_z", lastAccel[2] - gravityZ)
+                put("accelerometer_x", (lastAccel[0] - gravityX) / GRAVITY_SEC)
+                put("accelerometer_y", (lastAccel[1] - gravityY) / GRAVITY_SEC)
+                put("accelerometer_z", (lastAccel[2] - gravityZ) / GRAVITY_SEC)
                 put("gyroscope_x", lastGyro[0])
                 put("gyroscope_y", lastGyro[1])
                 put("gyroscope_z", lastGyro[2])
@@ -114,21 +152,51 @@ class TravelSenseService : Service(), SensorEventListener {
                 put("magnetometer_y", lastMag[1])
                 put("magnetometer_z", lastMag[2])
             }
-            dataBuffer.put(point)
+            synchronized(dataBuffer) {
+                dataBuffer.put(point)
+            }
         } catch (e: Exception) {
             Log.e("TravelSenseService", "Error recording point: ${e.message}")
         }
     }
 
-    private fun flushBufferToDisk() {
+    companion object {
+        var instance: TravelSenseService? = null
+            private set
+    }
+
+    private fun flushBufferToDisk(force: Boolean = false) {
         if (dataBuffer.length() == 0) return
         
         synchronized(dataBuffer) {
             try {
+                val now = System.currentTimeMillis()
+                val fiveMinuteWindow = now - (now % (5 * 60 * 1000))
+                val firstPoint = dataBuffer.getJSONObject(0)
+                val tsString = firstPoint.getString("timestamp")
+                val isoFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply { 
+                    timeZone = TimeZone.getTimeZone("UTC")
+                }
+                val firstDate = isoFormat.parse(tsString) ?: Date()
+                val sdf = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.getDefault())
+                val timestampStr = sdf.format(firstDate)
+                
+                // If it's not time to rotate and not forced, just keep in memory
+                if (!force && lastWriteTime != 0L) {
+                    val lastWindow = lastWriteTime - (lastWriteTime % (5 * 60 * 1000))
+                    if (fiveMinuteWindow == lastWindow) {
+                        return
+                    }
+                }
+
                 val fileDir = File(filesDir, "ArchivedData")
                 if (!fileDir.exists()) fileDir.mkdirs()
                 
-                val dataFile = File(fileDir, "sensor_data.json")
+                // Get Device ID
+                val deviceId = android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "unknown_device"
+                
+                val fileName = "${timestampStr}_${deviceId}_sensor_data.json"
+                val dataFile = File(fileDir, fileName)
                 
                 // Read existing data robustly
                 val existingData = try {
@@ -147,62 +215,41 @@ class TravelSenseService : Service(), SensorEventListener {
                     JSONArray()
                 }
                 
+                val pointsAdded = dataBuffer.length()
                 // Append new points from current buffer
-                for (i in 0 until dataBuffer.length()) {
+                for (i in 0 until pointsAdded) {
                     existingData.put(dataBuffer.get(i))
                 }
                 
-                // Check if we reached the 5-minute / 3000 record threshold for archiving
-                if (existingData.length() >= 3000) {
-                    try {
-                        // Get first timestamp for filename
-                        val firstPoint = existingData.getJSONObject(0)
-                        val utcTimeStr = firstPoint.getString("timestamp") 
-                        
-                        // Parse UTC string and convert to local timezone
-                        val sdfUtc = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
-                        val localTime = sdfUtc.parse(utcTimeStr)
-                        
-                        // Format for filename (Local Timezone, e.g. 20260318_231945)
-                        val sdfFile = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
-                        val safeStamp = localTime?.let { sdfFile.format(it) } ?: "unknown_time"
-                        
-                        // Get unique device ID (ANDROID_ID)
-                        val deviceId = android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "unknown"
-                        
-                        val archiveFile = File(fileDir, "sensor_data_${deviceId}_$safeStamp.json")
-                        archiveFile.writeText(existingData.toString(2))
-                        Log.d("TravelSenseService", "Archived 3000+ points to ${archiveFile.name}")
-                        
-                        // Clear the main file to start a fresh batch
-                        if (dataFile.exists()) dataFile.delete()
-                    } catch (e: Exception) {
-                        Log.e("TravelSenseService", "Archival failed: ${e.message}")
-                        // Fallback: write it back to main file to avoid data loss
-                        dataFile.writeText(existingData.toString(2))
-                    }
-                } else {
-                    // Just write back to main file
-                    dataFile.writeText(existingData.toString(2))
-                }
+                // Write back to disk
+                dataFile.writeText(existingData.toString(2))
                 
-                // Clear current in-memory buffer
+                // Clear current buffer
                 while (dataBuffer.length() > 0) dataBuffer.remove(0)
                 lastWriteTime = System.currentTimeMillis()
-                Log.d("TravelSenseService", "Sync complete. Current file points: ${existingData.length()}")
+                Log.d("TravelSenseService", "Flushed $pointsAdded records to $fileName (Total: ${existingData.length()})")
                 
             } catch (e: Exception) {
                 Log.e("TravelSenseService", "Critical error in flushBuffer: ${e.message}")
             }
         }
     }
+
+    fun getBufferJson(): String {
+        synchronized(dataBuffer) {
+            return dataBuffer.toString()
+        }
+    }
+
+    fun getIsPaused(): Boolean = isPaused
+    fun getIsBatteryPaused(): Boolean = autoPausedDueToBattery
  
     private val sensorEmitter = object : Runnable {
         override fun run() {
             if (!isPaused) {
                 emitSensorData()
             }
-            serviceHandler.postDelayed(this, 100) // 10Hz keep-alive and data sync
+            serviceHandler.postDelayed(this, 100)
         }
     }
 
@@ -210,6 +257,8 @@ class TravelSenseService : Service(), SensorEventListener {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
+        startTimeMillis = System.currentTimeMillis()
         createNotificationChannel()
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "TravelSense:RecordingLock")
@@ -269,13 +318,13 @@ class TravelSenseService : Service(), SensorEventListener {
 
     override fun onDestroy() {
         super.onDestroy()
-        serviceHandler.removeCallbacks(ticker)
         serviceHandler.removeCallbacks(sensorEmitter)
         unregisterSensors()
         fusedLocationClient.removeLocationUpdates(locationCallback)
-        flushBufferToDisk()
+        flushBufferToDisk(force = true)
         if (wakeLock?.isHeld == true) wakeLock?.release()
         serviceThread.quitSafely()
+        instance = null
     }
 
     private var lastAccelRecordTime = 0L
@@ -321,7 +370,9 @@ class TravelSenseService : Service(), SensorEventListener {
             "START" -> {
                 elapsedTime = intent.getIntExtra("startTime", 0)
                 isPaused = intent.getBooleanExtra("isPaused", false)
-                Log.d("TravelSenseService", "Starting with time $elapsedTime, paused=$isPaused")
+                batteryThreshold = intent.getIntExtra("batteryThreshold", 0)
+                startTimeMillis = System.currentTimeMillis() - (elapsedTime * 1000L)
+                Log.d("TravelSenseService", "Starting with time $elapsedTime, paused=$isPaused, threshold=$batteryThreshold")
                 
                 val notification = buildNotification()
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -335,18 +386,27 @@ class TravelSenseService : Service(), SensorEventListener {
                 }
             }
             "UPDATE" -> {
-                elapsedTime = intent.getIntExtra("time", elapsedTime)
+                val newTime = intent.getIntExtra("time", -1)
+                if (newTime >= 0) {
+                    elapsedTime = newTime
+                    startTimeMillis = System.currentTimeMillis() - (elapsedTime * 1000L)
+                }
                 isPaused = intent.getBooleanExtra("isPaused", isPaused)
+                batteryThreshold = intent.getIntExtra("batteryThreshold", batteryThreshold)
                 updateNotification()
             }
             "PAUSE_RESUME" -> {
-                isPaused = !isPaused
-                sendEventToJS("onNotificationPause", isPaused)
-                updateNotification()
+                Log.d("TravelSenseService", "Notification Pause pressed. Signaling JS...")
+                sendEventToJS("onNotificationPauseToggle", null)
             }
             "EXIT" -> {
+                // First bring the app to the foreground
+                val mainActivityIntent = packageManager.getLaunchIntentForPackage(packageName)
+                mainActivityIntent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(mainActivityIntent)
+                
+                // Then signal JS to show the exit modal
                 sendEventToJS("onNotificationExit", null)
-                // App will handle data saving and then call stopRecordingService or exit
             }
             "STOP" -> {
                 stopForeground(true)
@@ -358,27 +418,37 @@ class TravelSenseService : Service(), SensorEventListener {
 
     private fun buildNotification(): Notification {
         val pauseResumeText = if (isPaused) "Resume" else "Pause"
-        val statusText = if (isPaused) "Paused" else "Recording"
+        val statusText = if (isPaused) "⏸️ Paused" else "🔴 Recording"
         val timeText = formatTime(elapsedTime)
 
         val pauseIntent = Intent(this, NotificationActionReceiver::class.java).apply { action = "PAUSE_RESUME" }
-        val exitIntent = Intent(this, NotificationActionReceiver::class.java).apply { action = "EXIT" }
-
         val pausePendingIntent = PendingIntent.getBroadcast(this, 0, pauseIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val exitPendingIntent = PendingIntent.getBroadcast(this, 1, exitIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        
+        val exitActivityIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+            action = "EXIT_APP"
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
+        val exitPendingIntent = PendingIntent.getActivity(this, 3, exitActivityIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
         val mainActivityIntent = packageManager.getLaunchIntentForPackage(packageName)
         val mainPendingIntent = PendingIntent.getActivity(this, 2, mainActivityIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("TravelSense - $statusText")
-            .setContentText("Time: $timeText")
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("$statusText")
+            .setContentText("$timeText")
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .setContentIntent(mainPendingIntent)
             .setOngoing(true)
+            .setAutoCancel(false)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .addAction(android.R.drawable.ic_media_pause, pauseResumeText, pausePendingIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Exit", exitPendingIntent)
             .build()
+            
+        notification.flags = notification.flags or Notification.FLAG_ONGOING_EVENT or Notification.FLAG_NO_CLEAR
+        return notification
     }
 
     private fun formatTime(seconds: Int): String {
@@ -393,7 +463,7 @@ class TravelSenseService : Service(), SensorEventListener {
             val serviceChannel = NotificationChannel(
                 CHANNEL_ID,
                 "TravelSense Foreground Service",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_DEFAULT
             )
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(serviceChannel)
@@ -411,9 +481,9 @@ class TravelSenseService : Service(), SensorEventListener {
         
         if (reactContext != null) {
             val accel = Arguments.createMap().apply {
-                putDouble("x", lastAccel[0].toDouble())
-                putDouble("y", lastAccel[1].toDouble())
-                putDouble("z", lastAccel[2].toDouble())
+                putDouble("x", (lastAccel[0] / GRAVITY_SEC).toDouble())
+                putDouble("y", (lastAccel[1] / GRAVITY_SEC).toDouble())
+                putDouble("z", (lastAccel[2] / GRAVITY_SEC).toDouble())
             }
             val gyro = Arguments.createMap().apply {
                 putDouble("x", lastGyro[0].toDouble())
@@ -438,12 +508,10 @@ class TravelSenseService : Service(), SensorEventListener {
         }
     }
 
-    private fun sendEventToJS(eventName: String, params: Any?) {
-        val application = application as? ReactApplication
-        val reactNativeHost = application?.reactNativeHost
-        val reactContext = reactNativeHost?.reactInstanceManager?.currentReactContext
+    fun sendEventToJS(eventName: String, params: Any?) {
+        val reactContext = TravelSenseModule.reactContext
         
-        if (reactContext != null) {
+        if (reactContext != null && reactContext.hasActiveCatalystInstance()) {
             val eventParams = Arguments.createMap()
             when (params) {
                 is Boolean -> eventParams.putBoolean("value", params)
@@ -451,12 +519,16 @@ class TravelSenseService : Service(), SensorEventListener {
                 is Double -> eventParams.putDouble("value", params)
                 is String -> eventParams.putString("value", params)
             }
-            Log.d("TravelSenseService", "Emitting event $eventName to JS with params: $params")
-            reactContext
-                .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-                .emit(eventName, eventParams)
-        } else {
-            Log.d("TravelSenseService", "Skipping event $eventName: ReactContext is null")
+            
+            try {
+                reactContext
+                    .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                    .emit(eventName, eventParams)
+            } catch (e: Exception) {
+                Log.e("TravelSenseService", "Failed to emit event $eventName: ${e.message}")
+            }
         }
     }
+
+    fun getElapsedTime(): Int = elapsedTime
 }

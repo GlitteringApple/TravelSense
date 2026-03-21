@@ -17,7 +17,8 @@ import {
   BackHandler,
   Switch,
   NativeModules,
-  NativeEventEmitter
+  DeviceEventEmitter,
+  AppState
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import ButtonRound from "./components/ButtonRound"
@@ -28,9 +29,12 @@ import {
   NavigationContainer,
   createStaticNavigation,
   useNavigation,
+  createNavigationContainerRef
 } from '@react-navigation/native';
+const navigationRef = createNavigationContainerRef();
 import { createBottomTabNavigator, useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
-import { useEffect, useRef, useState, useMemo } from 'react';
+import * as Location from 'expo-location';
+import { useEffect, useRef, useState, useMemo, createContext, useContext } from 'react';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -56,6 +60,15 @@ import {
 } from "@shopify/react-native-skia";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { SettingsProvider, useSettings } from './src/contexts/SettingsContext';
+import * as Battery from 'expo-battery';
+import Slider from '@react-native-community/slider';
+
+export const RecordingContext = createContext({
+  isPaused: false,
+  setIsPaused: () => { },
+  elapsedTime: 0,
+  setElapsedTime: () => { },
+});
 
 //Icons
 import Entypo from '@expo/vector-icons/Entypo';
@@ -70,14 +83,12 @@ import * as DocumentPicker from 'expo-document-picker';
 
 const Stack = createNativeStackNavigator();
 
-function DrawerStack({ elapsedTime, isPaused, setIsPaused }) {
+function DrawerStack() {
   return (
     <Stack.Navigator screenOptions={{
-      animation: 'default', headerShown: true
+      animation: 'default', headerShown: true, headerBackButtonMenuEnabled: false
     }}>
-      <Stack.Screen name="Home" options={{ headerShown: false }}>
-        {(props) => <Tabs {...props} elapsedTime={elapsedTime} isPaused={isPaused} setIsPaused={setIsPaused} />}
-      </Stack.Screen>
+      <Stack.Screen name="Home" options={{ headerShown: false, gestureEnabled: false }} component={Tabs} />
       <Stack.Screen name="Settings" component={SettingsScreen} />
       <Stack.Screen name="About Us" component={AboutUsScreen} />
     </Stack.Navigator>
@@ -352,7 +363,8 @@ function PotholeEditorModal({ visible, onClose, potholes, onSave }) {
   );
 }
 
-function DataScreen({ elapsedTime, isPaused, setIsPaused }) {
+function DataScreen(props) {
+  const { isPaused, setIsPaused, elapsedTime } = useContext(RecordingContext);
   const padding = 15;
   const tabBarHeight = useBottomTabBarHeight();
   const sensorState = useSensorData(isPaused);
@@ -519,6 +531,8 @@ function SettingsScreen() {
     colorTheme,
     storageIntegrationEnabled,
     toggleStorageIntegration,
+    batteryThreshold,
+    setBatteryThreshold,
   } = useSettings();
 
   const insets = useSafeAreaInsets();
@@ -593,6 +607,21 @@ function SettingsScreen() {
 
         <Text style={[styles.sectionTitle, { color: themeColors.textSecondary }]}>VEHICLE</Text>
         <View style={[styles.settingsCard, { backgroundColor: themeColors.card, borderColor: themeColors.border, paddingVertical: 15 }]}>
+          <View style={{ paddingHorizontal: 15, paddingBottom: 15 }}>
+            <Text style={[styles.settingTitle, { color: themeColors.text }]}>Battery Threshold</Text>
+            <Text style={[styles.settingDesc, { color: themeColors.textSecondary, marginBottom: 10 }]}>Auto-pause recording below {batteryThreshold}%</Text>
+            <Slider
+              style={{width: '100%', height: 40}}
+              minimumValue={15}
+              maximumValue={100}
+              step={1}
+              value={batteryThreshold}
+              onValueChange={setBatteryThreshold}
+              minimumTrackTintColor={colorTheme}
+              maximumTrackTintColor={themeColors.border}
+              thumbTintColor={colorTheme}
+            />
+          </View>
           <Text style={[styles.settingTitle, { color: themeColors.text, marginBottom: 10, paddingHorizontal: 15 }]}>Engine Type</Text>
           <View style={styles.engineContainer}>
             {renderEngineButton('petrol', 'Petrol')}
@@ -638,7 +667,7 @@ const Tab = createBottomTabNavigator();
 //Dummy component for navigator tabs.
 const Empty = () => <View />;
 
-function Tabs({ elapsedTime, isPaused, setIsPaused }) {
+function Tabs() {
 
   const onPressTravelogue = () => {
     console.log('Travelogue button pressed');
@@ -657,13 +686,12 @@ function Tabs({ elapsedTime, isPaused, setIsPaused }) {
         }} />
       <Tab.Screen
         name="My Data"
+        component={DataScreen}
         options={{
           tabBarIcon: ({ color, size }) => (
             <AntDesign name="database" size={24} color="black" />
           )
-        }}>
-          {(props) => <DataScreen {...props} elapsedTime={elapsedTime} isPaused={isPaused} setIsPaused={setIsPaused} />}
-      </Tab.Screen>
+        }} />
       <Tab.Screen
         name="Travelogue"
         component={TravelogueScreen}
@@ -691,9 +719,9 @@ function CustomDrawerContent(props) {
     try {
       // Use our custom native module if available (Android)
       if (NativeModules.TravelSensePicker) {
-         const result = await NativeModules.TravelSensePicker.openPickerAtRoot();
-         console.log('Selected file (native):', result);
-         return;
+        const result = await NativeModules.TravelSensePicker.openPickerAtRoot();
+        console.log('Selected file (native):', result);
+        return;
       }
 
       // Fallback for iOS or if native module not found
@@ -702,7 +730,7 @@ function CustomDrawerContent(props) {
         copyToCacheDirectory: true,
       });
       if (result.assets) {
-         console.log('Selected file:', result.assets[0].uri);
+        console.log('Selected file:', result.assets[0].uri);
       }
     } catch (err) {
       if (err.code !== 'PICKER_CANCELLED') {
@@ -757,7 +785,7 @@ function CustomDrawerContent(props) {
         activeTintColor="white"
         inactiveTintColor={themeColors.inactiveText}
         labelStyle={{ color: themeColors.text }}
-        icon={({ color, size }) => (<AntDesign name="folderopen" size={24} color={themeColors.text} />)}
+        icon={({ color, size }) => (<AntDesign name="folder" size={24} color={themeColors.text} />)}
         onPress={openFilePicker}
       />
     </DrawerContentScrollView>
@@ -766,102 +794,199 @@ function CustomDrawerContent(props) {
 
 /* ------------------ Drawer ------------------ */
 
+function BatteryAutoPauseManager() {
+  const { batteryThreshold } = useSettings();
+  const { isPaused, setIsPaused } = useContext(RecordingContext);
+  const [showModal, setShowModal] = useState(false);
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('onBatteryAutoPause', (event) => {
+      console.log("onBatteryAutoPause native event received:", event.value);
+      setIsPaused(true);
+      setShowModal(true);
+    });
+
+    return () => sub.remove();
+  }, [setIsPaused]);
+
+  return (
+    <Modal visible={showModal} transparent animationType="fade">
+      <View style={{flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center'}}>
+        <View style={{backgroundColor: '#1a1a2e', padding: 25, borderRadius: 15, width: '80%', elevation: 5}}>
+           <Text style={{fontSize: 20, fontWeight: 'bold', marginBottom: 10, color: '#e0e0e0'}}>🔋 Low Battery</Text>
+           <Text style={{marginBottom: 20, color: '#a8a8b3', lineHeight: 22}}>Recording has been automatically paused because your battery fell below {batteryThreshold}%.</Text>
+           <Pressable onPress={() => setShowModal(false)} style={{backgroundColor: '#003CB3', padding: 12, borderRadius: 8, alignItems: 'center'}}>
+              <Text style={{color: 'white', fontWeight: 'bold'}}>I Understand</Text>
+           </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 const Drawer = createDrawerNavigator();
 
 export default function App({ navigation }) {
+  const { batteryThreshold } = useSettings();
   const [elapsedTime, setElapsedTime] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
-  const skipNextUpdate = useRef(false);
   const serviceStarted = useRef(false);
+  const [showBatteryModal, setShowBatteryModal] = useState(false);
+
+  const handleExitRequest = () => {
+    Alert.alert(
+      'Exit TravelSense',
+      'Are you sure you want to exit?',
+      [
+        { text: 'Not really', style: 'cancel' },
+        { 
+          text: 'Yes', 
+          onPress: async () => {
+            await SensorUpload.persistToDisk();
+            if (NativeModules.TravelSenseModule && NativeModules.TravelSenseModule.exitApp) {
+              NativeModules.TravelSenseModule.exitApp();
+            } else {
+              BackHandler.exitApp();
+            }
+          } 
+        },
+      ]
+    );
+  };
 
   useEffect(() => {
     SensorUpload.loadFromDisk();
     if (!NativeModules.TravelSenseModule) return;
 
-    const eventEmitter = new NativeEventEmitter(NativeModules.TravelSenseModule);
-    
-    const pauseSub = eventEmitter.addListener('onNotificationPause', (event) => {
-      console.log("onNotificationPause event received:", event);
-      skipNextUpdate.current = true;
-      setIsPaused(event.value);
+    const pauseSub = DeviceEventEmitter.addListener('onNotificationPauseToggle', () => {
+      console.log("onNotificationPauseToggle event received");
+      setIsPaused(prev => !prev);
     });
 
-    const tickSub = eventEmitter.addListener('onServiceTick', (event) => {
-      // console.log("onServiceTick event received:", event);
+    const tickSub = DeviceEventEmitter.addListener('onServiceTick', (event) => {
       if (event && event.value !== undefined) {
+        // console.log("onServiceTick received:", event.value);
         setElapsedTime(event.value);
       }
     });
 
-    const exitSub = eventEmitter.addListener('onNotificationExit', async () => {
+    const exitSub = DeviceEventEmitter.addListener('onNotificationExit', async () => {
       console.log("onNotificationExit event received");
-      await SensorUpload.persistToDisk();
-      if (NativeModules.TravelSenseModule) {
-        NativeModules.TravelSenseModule.exitApp();
-      }
+      handleExitRequest();
+    });
+
+    const batterySub = DeviceEventEmitter.addListener('onBatteryAutoPause', () => {
+      setIsPaused(true);
+      setShowBatteryModal(true);
     });
 
     return () => {
       pauseSub.remove();
       tickSub.remove();
       exitSub.remove();
+      batterySub.remove();
     };
   }, []);
 
+  const syncServiceState = async () => {
+    if (NativeModules.TravelSenseModule && NativeModules.TravelSenseModule.getServiceState) {
+      const state = await NativeModules.TravelSenseModule.getServiceState();
+      if (state) {
+        console.log("Syncing with active service:", state);
+        setElapsedTime(state.elapsedTime);
+        setIsPaused(state.isPaused);
+        if (state.isBatteryPaused) {
+          setShowBatteryModal(true);
+        }
+        serviceStarted.current = true;
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const startServiceIfPermitted = async () => {
+    if (serviceStarted.current || !NativeModules.TravelSenseModule) return;
+
+    const alreadyRunning = await syncServiceState();
+    if (alreadyRunning) return;
+
+    const { status } = await Location.getForegroundPermissionsAsync();
+    if (status === 'granted') {
+      if (AppState.currentState === 'active') {
+        console.log("Starting Foreground Service (Permissions Verified and App Active)");
+        serviceStarted.current = true;
+        NativeModules.TravelSenseModule.startRecordingService(elapsedTime, false, batteryThreshold);
+        return true;
+      } else {
+        console.log("Status is granted, but App is in background. Deferring service start.");
+      }
+    }
+    return false;
+  };
+
   useEffect(() => {
-    const checkBatteryOptimizations = async () => {
-      if (NativeModules.TravelSenseModule && NativeModules.TravelSenseModule.isBatteryOptimizationIgnored) {
-        const isIgnored = await NativeModules.TravelSenseModule.isBatteryOptimizationIgnored();
-        if (!isIgnored) {
-          Alert.alert(
-            'Battery Optimization',
-            'To ensure reliable background recording, please disable battery optimization for TravelSense.',
-            [
-              { text: 'Later', style: 'cancel' },
-              { 
-                text: 'Open Settings', 
-                onPress: () => NativeModules.TravelSenseModule.requestBatteryOptimizationExemption() 
-              },
-            ]
-          );
+    let checkInterval;
+
+    const handleAppState = async (nextState) => {
+      if (nextState === 'active') {
+        const running = await syncServiceState();
+        if (!running) {
+          const started = await startServiceIfPermitted();
+          if (started && checkInterval) {
+            clearInterval(checkInterval);
+            checkInterval = null;
+          }
         }
       }
     };
-    checkBatteryOptimizations();
+
+    const sub = AppState.addEventListener('change', handleAppState);
+
+    const init = async () => {
+      const running = await syncServiceState();
+      if (!running) {
+        const started = await startServiceIfPermitted();
+        if (!started) {
+          checkInterval = setInterval(async () => {
+            const nowRunning = await syncServiceState();
+            if (nowRunning) {
+              clearInterval(checkInterval);
+              checkInterval = null;
+            } else {
+              const nowStarted = await startServiceIfPermitted();
+              if (nowStarted && checkInterval) {
+                clearInterval(checkInterval);
+                checkInterval = null;
+              }
+            }
+          }, 2000);
+        }
+      }
+    };
+
+    init();
+
+    return () => {
+      sub.remove();
+      if (checkInterval) clearInterval(checkInterval);
+    };
   }, []);
 
   useEffect(() => {
-    if (!isPaused && !serviceStarted.current && NativeModules.TravelSenseModule) {
-      console.log("Starting Foreground Service from App Root");
-      serviceStarted.current = true;
-      NativeModules.TravelSenseModule.startRecordingService(elapsedTime, false);
+    if (NativeModules.TravelSenseModule && serviceStarted.current) {
+      NativeModules.TravelSenseModule.updateServiceState(-1, isPaused, batteryThreshold);
     }
-  }, [isPaused]);
-
-  useEffect(() => {
-    if (skipNextUpdate.current) {
-      skipNextUpdate.current = false;
-      return;
-    }
-    if (elapsedTime > 0 && NativeModules.TravelSenseModule) {
-      NativeModules.TravelSenseModule.updateServiceState(elapsedTime, isPaused);
-    }
-  }, [isPaused]);
+  }, [isPaused, batteryThreshold]);
 
   useEffect(() => {
     const backAction = () => {
-      if (navigation.canGoBack()) {
-        return false;
+      if (navigationRef.isReady() && navigationRef.canGoBack()) {
+        navigationRef.goBack();
+        return true;
       }
 
-      Alert.alert(
-        'Exit TravelSense',
-        'Are you sure you want to exit?',
-        [
-          { text: 'Not really', style: 'cancel' },
-          { text: 'Yes', onPress: () => BackHandler.exitApp() },
-        ]
-      );
+      handleExitRequest();
       return true; // prevent default behavior
     };
 
@@ -874,21 +999,30 @@ export default function App({ navigation }) {
   }, []);
 
   return (
-    <SettingsProvider>
-      <NavigationContainer>
-        <Drawer.Navigator
-          drawerContent={(props) => <CustomDrawerContent {...props} />}
-          screenOptions={{
-            headerShown: false, drawerType: "front", detachInactiveScreens: false,
-          }}
-        >
-          <Drawer.Screen name="Main">
-            {(props) => <DrawerStack {...props} elapsedTime={elapsedTime} isPaused={isPaused} setIsPaused={setIsPaused} />}
-          </Drawer.Screen>
-        </Drawer.Navigator>
+    <RecordingContext.Provider value={{ isPaused, setIsPaused, elapsedTime, setElapsedTime }}>
+      <Modal visible={showBatteryModal} transparent animationType="fade">
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' }}>
+          <View style={{ backgroundColor: '#1a1a2e', padding: 25, borderRadius: 15, width: '80%', elevation: 5 }}>
+            <Text style={{ fontSize: 20, fontWeight: 'bold', marginBottom: 10, color: '#e0e0e0' }}>🔋 Low Battery</Text>
+            <Text style={{ marginBottom: 20, color: '#a8a8b3', lineHeight: 22 }}>Recording has been automatically paused because your battery fell below {batteryThreshold}%.</Text>
+            <Pressable onPress={() => setShowBatteryModal(false)} style={{ backgroundColor: '#003CB3', padding: 12, borderRadius: 8, alignItems: 'center' }}>
+              <Text style={{ color: 'white', fontWeight: 'bold' }}>I Understand</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+      <NavigationContainer ref={navigationRef}>
+          <Drawer.Navigator
+            drawerContent={(props) => <CustomDrawerContent {...props} />}
+            screenOptions={{
+              headerShown: false, drawerType: "front", detachInactiveScreens: false,
+            }}
+          >
+            <Drawer.Screen name="Main" component={DrawerStack} />
+          </Drawer.Navigator>
       </NavigationContainer>
-    </SettingsProvider>
-  )
+    </RecordingContext.Provider>
+  );
 }
 
 const styles = StyleSheet.create({

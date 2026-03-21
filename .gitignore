@@ -56,3 +56,4 @@ package-lock.json
 /android/app/*.iml
 /android/app/.cxx
 /android/app/.test
+TODO.txt

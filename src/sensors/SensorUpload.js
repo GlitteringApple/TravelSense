@@ -159,27 +159,40 @@ class SensorUpload {
     }
 
     async persistToDisk() {
+        // Disabled: The native Android service handles all data persistence to ensure background reliability.
+        console.log('SensorUpload: JS-side persistence is disabled, relying on Android Native Service.');
+    }
+
+    setInMemoryData(data) {
+        if (!data) return;
         try {
-            const dir = new Directory(Paths.document, DATA_FOLDER);
-            if (!dir.exists) {
-                await dir.create();
+            const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+            if (Array.isArray(parsed)) {
+                this.dataBatch = parsed;
+                console.log(`SensorUpload: Sync'd ${this.dataBatch.length} records from native memory`);
             }
-            const file = new File(Paths.document, DATA_FOLDER, 'sensor_data.json');
-            await file.write(JSON.stringify(this.dataBatch, null, 2));
-            console.log(`SensorUpload: Data persisted to disk in /${DATA_FOLDER}`);
-        } catch (error) {
-            console.error('SensorUpload: Failed to persist to disk:', error);
+        } catch (e) {
+            console.error('SensorUpload: Failed to sync from memory:', e);
         }
     }
 
     async loadFromDisk() {
         try {
-            const file = new File(Paths.document, DATA_FOLDER, 'sensor_data.json');
-            if (file.exists) {
-                const content = await file.text();
+            const dir = new Directory(Paths.document, DATA_FOLDER);
+            if (!dir.exists) return;
+
+            const files = dir.list().filter(file => file.name.endsWith('.json'));
+            if (files.length === 0) return;
+
+            // Sort files by modification time, newest first
+            files.sort((a, b) => (b.modificationTime || 0) - (a.modificationTime || 0));
+            const latestFile = files[0];
+
+            if (latestFile.exists) {
+                const content = await latestFile.text();
                 if (content && content.trim().startsWith('[')) {
                     this.dataBatch = JSON.parse(content);
-                    console.log(`SensorUpload: Loaded ${this.dataBatch.length} records from disk`);
+                    console.log(`SensorUpload: Loaded ${this.dataBatch.length} records from disk (${latestFile.name})`);
                 }
             }
         } catch (error) {

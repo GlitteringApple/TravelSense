@@ -87,23 +87,32 @@ class TravelSenseDocumentsProvider : DocumentsProvider() {
 
     private fun getFileForDocId(documentId: String): File {
         val baseDir = context?.filesDir ?: throw FileNotFoundException("Files dir not found")
-        if (documentId == DEFAULT_DOCUMENT_ID) {
+        if (documentId == DEFAULT_DOCUMENT_ID || documentId == DEFAULT_ROOT_ID) {
             return baseDir
         }
         val path = documentId.removePrefix("file_")
-        val file = File(baseDir, path)
-        return file
+        return File(baseDir, path)
     }
 
     private fun includeFile(cursor: MatrixCursor, documentId: String?, file: File) {
-        val docId = documentId ?: "file_${file.name}"
+        val baseDir = context?.filesDir ?: return
+        val relativePath = file.absolutePath.removePrefix(baseDir.absolutePath).removePrefix("/")
+        val docId = documentId ?: "file_$relativePath"
+        
+        val mimeType = when {
+            file.isDirectory -> DocumentsContract.Document.MIME_TYPE_DIR
+            file.name.endsWith(".json") -> "application/json"
+            file.name.endsWith(".txt") -> "text/plain"
+            else -> "application/octet-stream"
+        }
+
         cursor.newRow().apply {
             add(DocumentsContract.Document.COLUMN_DOCUMENT_ID, docId)
             add(DocumentsContract.Document.COLUMN_DISPLAY_NAME, file.name)
             add(DocumentsContract.Document.COLUMN_SIZE, file.length())
-            add(DocumentsContract.Document.COLUMN_MIME_TYPE, if (file.isDirectory) DocumentsContract.Document.MIME_TYPE_DIR else "application/octet-stream")
+            add(DocumentsContract.Document.COLUMN_MIME_TYPE, mimeType)
             add(DocumentsContract.Document.COLUMN_LAST_MODIFIED, file.lastModified())
-            add(DocumentsContract.Document.COLUMN_FLAGS, 0)
+            add(DocumentsContract.Document.COLUMN_FLAGS, DocumentsContract.Document.FLAG_SUPPORTS_DELETE or DocumentsContract.Document.FLAG_SUPPORTS_WRITE)
         }
     }
 }

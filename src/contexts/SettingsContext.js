@@ -8,6 +8,7 @@ export const SettingsProvider = ({ children }) => {
     const [engineType, setEngineType] = useState('petrol'); // petrol, diesel, electric
     const [colorTheme, setColorTheme] = useState('#003CB3'); // Default blue
     const [storageIntegrationEnabled, setStorageIntegrationEnabled] = useState(true);
+    const [batteryThreshold, setBatteryThreshold] = useState(30);
 
     const toggleDarkMode = () => setIsDarkMode((prev) => !prev);
     const toggleNotifications = () => setNotificationsEnabled((prev) => !prev);
@@ -26,6 +27,8 @@ export const SettingsProvider = ({ children }) => {
                 setColorTheme,
                 storageIntegrationEnabled,
                 toggleStorageIntegration,
+                batteryThreshold,
+                setBatteryThreshold,
             }}
         >
             {children}

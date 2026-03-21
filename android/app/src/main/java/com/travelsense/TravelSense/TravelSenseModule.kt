@@ -14,27 +14,40 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.Promise
+import com.facebook.react.bridge.Arguments
+import com.facebook.react.bridge.WritableMap
 
 class TravelSenseModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
+
+    init {
+        Companion.reactContext = reactContext
+    }
+
+    companion object {
+        var reactContext: ReactApplicationContext? = null
+            private set
+    }
 
     override fun getName(): String = "TravelSenseModule"
 
     @ReactMethod
-    fun startRecordingService(startTime: Int, isPaused: Boolean) {
+    fun startRecordingService(startTime: Int, isPaused: Boolean, batteryThreshold: Int) {
         val intent = Intent(reactApplicationContext, TravelSenseService::class.java).apply {
             action = "START"
             putExtra("startTime", startTime)
             putExtra("isPaused", isPaused)
+            putExtra("batteryThreshold", batteryThreshold)
         }
         reactApplicationContext.startService(intent)
     }
 
     @ReactMethod
-    fun updateServiceState(time: Int, isPaused: Boolean) {
+    fun updateServiceState(time: Int, isPaused: Boolean, batteryThreshold: Int) {
         val intent = Intent(reactApplicationContext, TravelSenseService::class.java).apply {
             action = "UPDATE"
             putExtra("time", time)
             putExtra("isPaused", isPaused)
+            putExtra("batteryThreshold", batteryThreshold)
         }
         reactApplicationContext.startService(intent)
     }
@@ -92,8 +105,38 @@ class TravelSenseModule(reactContext: ReactApplicationContext) : ReactContextBas
 
     @ReactMethod
     fun exitApp() {
-        android.os.Process.killProcess(android.os.Process.myPid())
-        System.exit(0)
+        stopRecordingService()
+        // Wait 500ms for service to stop and flush buffer to disk
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            android.os.Process.killProcess(android.os.Process.myPid())
+            // Also call exit for complete termination
+            System.exit(0)
+        }, 500)
+    }
+
+    @ReactMethod
+    fun getInMemoryBuffer(promise: Promise) {
+        val service = TravelSenseService.instance
+        if (service != null) {
+            promise.resolve(service.getBufferJson())
+        } else {
+            promise.resolve("[]")
+        }
+    }
+
+    @ReactMethod
+    fun getServiceState(promise: Promise) {
+        val service = TravelSenseService.instance
+        if (service != null) {
+            val map = Arguments.createMap().apply {
+                putInt("elapsedTime", service.getElapsedTime())
+                putBoolean("isPaused", service.getIsPaused())
+                putBoolean("isBatteryPaused", service.getIsBatteryPaused())
+            }
+            promise.resolve(map)
+        } else {
+            promise.resolve(null)
+        }
     }
 
     @ReactMethod

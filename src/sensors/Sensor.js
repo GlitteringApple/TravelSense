@@ -1,7 +1,7 @@
 import { Accelerometer, Gyroscope, Magnetometer, Barometer } from 'expo-sensors';
 import * as Location from 'expo-location';
 import { useEffect, useState, useRef } from 'react';
-import { NativeModules, NativeEventEmitter, AppState } from 'react-native';
+import { NativeModules, DeviceEventEmitter, AppState } from 'react-native';
 import SensorUpload from './SensorUpload';
 
 const DATA_LENGTH = 500;
@@ -72,8 +72,21 @@ export function useSensorData(isPaused = false) {
     const handleAppStateChange = async (nextAppState) => {
       if (nextAppState === 'active') {
         console.log('App in foreground: Syncing data from background recording');
-        await SensorUpload.loadFromDisk();
-        syncHistoryFromBatch();
+        try {
+          // Sync directly from native memory for instant restoration
+          const inMemoryData = await NativeModules.TravelSenseModule.getInMemoryBuffer();
+          if (inMemoryData && inMemoryData !== '[]') {
+            SensorUpload.setInMemoryData(inMemoryData);
+          } else {
+            // Fallback to disk if memory is empty
+            await SensorUpload.loadFromDisk();
+          }
+          syncHistoryFromBatch();
+        } catch (e) {
+          console.error('Failed to sync history on resume:', e);
+          await SensorUpload.loadFromDisk();
+          syncHistoryFromBatch();
+        }
       }
     };
 
@@ -86,9 +99,8 @@ export function useSensorData(isPaused = false) {
     if (isPaused) return;
 
     let accelSub, gyroSub, magSub, baroSub, locationWatcher, nativeSub;
-    const eventEmitter = new NativeEventEmitter(NativeModules.TravelSenseModule);
-
-    nativeSub = eventEmitter.addListener('onSensorData', (event) => {
+    
+    nativeSub = DeviceEventEmitter.addListener('onSensorData', (event) => {
       // Prioritise native readings in background as expo-sensors often pause
       if (latestData.current) {
         if (event.accelerometer) latestData.current.accelerometer = event.accelerometer;

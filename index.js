@@ -1,8 +1,11 @@
 import { registerRootComponent } from 'expo';
-
 import App from './App';
+import { SettingsProvider } from './src/contexts/SettingsContext';
 
-// registerRootComponent calls AppRegistry.registerComponent('main', () => App);
-// It also ensures that whether you load the app in Expo Go or in a native build,
-// the environment is set up appropriately
-registerRootComponent(App);
+const Root = () => (
+    <SettingsProvider>
+        <App />
+    </SettingsProvider>
+);
+
+registerRootComponent(Root);

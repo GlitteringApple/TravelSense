@@ -2,6 +2,8 @@ package com.travelsense.TravelSense
 
 import android.os.Build
 import android.os.Bundle
+import android.content.Intent
+import com.travelsense.TravelSense.TravelSenseService
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
@@ -17,6 +19,22 @@ class MainActivity : ReactActivity() {
     // This is required for expo-splash-screen.
     setTheme(R.style.AppTheme);
     super.onCreate(null)
+    checkExitIntent(intent)
+  }
+
+  override fun onNewIntent(intent: Intent) {
+      super.onNewIntent(intent)
+      setIntent(intent)
+      checkExitIntent(intent)
+  }
+
+  private fun checkExitIntent(intent: Intent?) {
+      if (intent?.action == "EXIT_APP") {
+          // Fire the event slightly late to ensure JS is ready
+          android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+              TravelSenseService.instance?.sendEventToJS("onNotificationExit", null)
+          }, 500)
+      }
   }
 
   /**
