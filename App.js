@@ -18,8 +18,11 @@ import {
   Switch,
   NativeModules,
   DeviceEventEmitter,
-  AppState
+  AppState,
+  Linking
 } from 'react-native';
+import * as Notifications from 'expo-notifications';
+import { File, Paths } from 'expo-file-system';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import ButtonRound from "./components/ButtonRound"
 import GraphCard from './components/GraphCard';
@@ -715,27 +718,22 @@ function CustomDrawerContent(props) {
     inactiveText: isDarkMode ? '#aaaaaa' : 'gray',
   };
 
-  const openFilePicker = async () => {
+  const openFileManager = async () => {
     try {
       // Use our custom native module if available (Android)
-      if (NativeModules.TravelSensePicker) {
-        const result = await NativeModules.TravelSensePicker.openPickerAtRoot();
-        console.log('Selected file (native):', result);
+      if (NativeModules.TravelSensePicker && NativeModules.TravelSensePicker.openFileManager) {
+        await NativeModules.TravelSensePicker.openFileManager();
         return;
       }
 
       // Fallback for iOS or if native module not found
-      const result = await DocumentPicker.getDocumentAsync({
+      // Note: On iOS, this will still open the document picker as there's no direct "open folder" intent.
+      await DocumentPicker.getDocumentAsync({
         type: '*/*',
-        copyToCacheDirectory: true,
+        copyToCacheDirectory: false,
       });
-      if (result.assets) {
-        console.log('Selected file:', result.assets[0].uri);
-      }
     } catch (err) {
-      if (err.code !== 'PICKER_CANCELLED') {
-        console.warn('File picker error:', err);
-      }
+      // Ignore cancellations
     }
   };
 
@@ -786,7 +784,7 @@ function CustomDrawerContent(props) {
         inactiveTintColor={themeColors.inactiveText}
         labelStyle={{ color: themeColors.text }}
         icon={({ color, size }) => (<AntDesign name="folder" size={24} color={themeColors.text} />)}
-        onPress={openFilePicker}
+        onPress={openFileManager}
       />
     </DrawerContentScrollView>
   );
@@ -824,6 +822,105 @@ function BatteryAutoPauseManager() {
   );
 }
 
+/* ------------------ Notification Prompt ------------------ */
+
+const OPT_OUT_FILE = 'notification_opt_out.txt';
+
+async function checkOptOut() {
+  try {
+    const file = new File(Paths.document, OPT_OUT_FILE);
+    if (file.exists) {
+      const val = await file.text();
+      return val === 'true';
+    }
+  } catch (e) {
+    console.log("checkOptOut: Error reading file", e);
+  }
+  return false;
+}
+
+async function saveOptOut(val) {
+  try {
+    const file = new File(Paths.document, OPT_OUT_FILE);
+    await file.write(val.toString());
+  } catch (e) {
+    console.log("saveOptOut: Error writing file", e);
+  }
+}
+
+function NotificationPromptModal({ visible, onClose, onOptOut }) {
+  const [checked, setChecked] = useState(false);
+  
+  const handleEnable = () => {
+    if (NativeModules.TravelSenseModule && NativeModules.TravelSenseModule.openNotificationSettings) {
+      NativeModules.TravelSenseModule.openNotificationSettings();
+    } else {
+      Linking.openSettings();
+    }
+    onClose();
+  };
+
+  const handleNotNow = () => {
+    if (checked) {
+      onOptOut();
+    }
+    onClose();
+  };
+
+  return (
+    <Modal visible={visible} transparent animationType="fade">
+      <View style={{flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center'}}>
+        <View style={{backgroundColor: '#1a1a2e', padding: 25, borderRadius: 15, width: '85%', elevation: 10, borderWidth: 1, borderColor: '#303050'}}>
+          <View style={{alignItems: 'center', marginBottom: 20}}>
+            <MaterialIcons name="notifications-active" size={50} color="#00C853" />
+            <Text style={{color: 'white', fontSize: 22, fontWeight: 'bold', marginTop: 15, textAlign: 'center'}}>Keep Tracking Active</Text>
+          </View>
+          
+          <Text style={{color: '#ccc', fontSize: 16, textAlign: 'center', marginBottom: 25, lineHeight: 22}}>
+            Enable notifications to monitor your recording and access controls directly from your notification bar even in the background.
+          </Text>
+
+          <Pressable 
+             onPress={() => setChecked(!checked)}
+             style={{flexDirection: 'row', alignItems: 'center', marginBottom: 25, alignSelf: 'center'}}
+          >
+            <View style={{
+                width: 20, 
+                height: 20, 
+                borderRadius: 4, 
+                borderWidth: 2, 
+                borderColor: '#00C853', 
+                backgroundColor: checked ? '#00C853' : 'transparent',
+                justifyContent: 'center',
+                alignItems: 'center',
+                marginRight: 10
+            }}>
+                {checked && <AntDesign name="check" size={14} color="white" />}
+            </View>
+            <Text style={{color: '#999', fontSize: 14}}>Don't remind me again</Text>
+          </Pressable>
+
+          <View style={{flexDirection: 'column', gap: 10}}>
+            <Pressable 
+              onPress={handleEnable}
+              style={{backgroundColor: '#00C853', paddingVertical: 14, borderRadius: 10, alignItems: 'center'}}
+            >
+              <Text style={{color: 'white', fontWeight: 'bold', fontSize: 16}}>Enable in Settings</Text>
+            </Pressable>
+            
+            <Pressable 
+              onPress={handleNotNow}
+              style={{paddingVertical: 10, alignItems: 'center'}}
+            >
+              <Text style={{color: '#666', fontWeight: '600', fontSize: 14}}>Not now</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 const Drawer = createDrawerNavigator();
 
 export default function App({ navigation }) {
@@ -831,7 +928,9 @@ export default function App({ navigation }) {
   const [elapsedTime, setElapsedTime] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
   const serviceStarted = useRef(false);
+  const hasCheckedNotifications = useRef(false);
   const [showBatteryModal, setShowBatteryModal] = useState(false);
+  const [showNotificationModal, setShowNotificationModal] = useState(false);
 
   const handleExitRequest = () => {
     Alert.alert(
@@ -998,6 +1097,37 @@ export default function App({ navigation }) {
     return () => backHandler.remove();
   }, []);
 
+  useEffect(() => {
+    const checkNotificationStatus = async () => {
+      if (hasCheckedNotifications.current) return;
+      
+      try {
+        const { status } = await Notifications.getPermissionsAsync();
+        console.log("checkNotificationStatus: Current status:", status);
+        if (status !== 'granted') {
+          const optedOut = await checkOptOut();
+          if (!optedOut) {
+            setShowNotificationModal(true);
+          }
+        }
+        hasCheckedNotifications.current = true;
+      } catch (e) {
+        console.error("checkNotificationStatus error:", e);
+      }
+    };
+
+    checkNotificationStatus();
+    
+    // Check when app resumes from background (Only if not already shown this session)
+    const sub = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active' && !hasCheckedNotifications.current) {
+        checkNotificationStatus();
+      }
+    });
+
+    return () => sub.remove();
+  }, []);
+
   return (
     <RecordingContext.Provider value={{ isPaused, setIsPaused, elapsedTime, setElapsedTime }}>
       <Modal visible={showBatteryModal} transparent animationType="fade">
@@ -1021,7 +1151,15 @@ export default function App({ navigation }) {
             <Drawer.Screen name="Main" component={DrawerStack} />
           </Drawer.Navigator>
       </NavigationContainer>
-    </RecordingContext.Provider>
+        <NotificationPromptModal 
+          visible={showNotificationModal} 
+          onClose={() => setShowNotificationModal(false)}
+          onOptOut={async () => {
+             await saveOptOut(true);
+             setShowNotificationModal(false);
+          }}
+        />
+      </RecordingContext.Provider>
   );
 }
 

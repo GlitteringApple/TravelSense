@@ -140,6 +140,16 @@ class TravelSenseModule(reactContext: ReactApplicationContext) : ReactContextBas
     }
 
     @ReactMethod
+    fun openNotificationSettings() {
+        val intent = Intent().apply {
+            action = "android.settings.APP_NOTIFICATION_SETTINGS"
+            putExtra("android.provider.extra.APP_PACKAGE", reactApplicationContext.packageName)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        reactApplicationContext.startActivity(intent)
+    }
+
+    @ReactMethod
     fun addListener(eventName: String) {
         // Keep for NativeEventEmitter compatibility
     }

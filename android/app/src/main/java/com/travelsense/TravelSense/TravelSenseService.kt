@@ -81,6 +81,7 @@ class TravelSenseService : Service(), SensorEventListener {
     private lateinit var serviceThread: HandlerThread
 
     private var startTimeMillis = 0L
+    private var lastNotificationUpdateTime = 0L
 
     private fun checkBatteryAndAutoPause() {
         if (batteryThreshold <= 0) return
@@ -95,7 +96,7 @@ class TravelSenseService : Service(), SensorEventListener {
             val batteryPct = (level * 100) / scale
             if (batteryPct < batteryThreshold) {
                 if (!isPaused && !autoPausedDueToBattery) {
-                    isPaused = true
+                    setPausedState(true)
                     autoPausedDueToBattery = true
                     Log.d("TravelSenseService", "Auto-pausing due to low battery: $batteryPct%")
                     sendEventToJS("onBatteryAutoPause", batteryPct)
@@ -116,7 +117,12 @@ class TravelSenseService : Service(), SensorEventListener {
                 elapsedTime = ((currentRealTime - startTimeMillis) / 1000).toInt()
                 
                 sendEventToJS("onServiceTick", elapsedTime)
-                updateNotification()
+                
+                // Update notification chronometer base every 30 seconds to prevent drift 
+                if (currentRealTime - lastNotificationUpdateTime >= 30000) {
+                    updateNotification()
+                }
+                
                 recordPointToBuffer() // authoratative 1Hz record
                 
                 // Periodically flush to disk (every 5 seconds)
@@ -189,7 +195,10 @@ class TravelSenseService : Service(), SensorEventListener {
                     }
                 }
 
-                val fileDir = File(filesDir, "ArchivedData")
+                val dateFolderFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+                val dateFolder = dateFolderFormat.format(firstDate)
+
+                val fileDir = File(File(filesDir, "ArchivedData"), dateFolder)
                 if (!fileDir.exists()) fileDir.mkdirs()
                 
                 // Get Device ID
@@ -313,7 +322,15 @@ class TravelSenseService : Service(), SensorEventListener {
     }
 
     private fun unregisterSensors() {
-        sensorManager.unregisterListener(this)
+        if (::sensorManager.isInitialized) {
+            sensorManager.unregisterListener(this)
+        }
+    }
+
+    private fun stopLocationUpdates() {
+        if (::fusedLocationClient.isInitialized) {
+            fusedLocationClient.removeLocationUpdates(locationCallback)
+        }
     }
 
     override fun onDestroy() {
@@ -363,16 +380,34 @@ class TravelSenseService : Service(), SensorEventListener {
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
+    private fun setPausedState(newPaused: Boolean) {
+        if (isPaused == newPaused) return
+        isPaused = newPaused
+        if (isPaused) {
+            Log.d("TravelSenseService", "Pausing: Unregistering sensors and location")
+            unregisterSensors()
+            stopLocationUpdates()
+        } else {
+            Log.d("TravelSenseService", "Resuming: Registering sensors and location")
+            registerSensors()
+            startLocationUpdates()
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action
         Log.d("TravelSenseService", "Action: $action")
         when (action) {
             "START" -> {
                 elapsedTime = intent.getIntExtra("startTime", 0)
-                isPaused = intent.getBooleanExtra("isPaused", false)
+                val newPaused = intent.getBooleanExtra("isPaused", false)
                 batteryThreshold = intent.getIntExtra("batteryThreshold", 0)
                 startTimeMillis = System.currentTimeMillis() - (elapsedTime * 1000L)
-                Log.d("TravelSenseService", "Starting with time $elapsedTime, paused=$isPaused, threshold=$batteryThreshold")
+                Log.d("TravelSenseService", "Starting with time $elapsedTime, paused=$newPaused, threshold=$batteryThreshold")
+                
+                // Set initial paused state correctly
+                isPaused = false // Reset for setPausedState to take effect
+                setPausedState(newPaused)
                 
                 val notification = buildNotification()
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -391,7 +426,8 @@ class TravelSenseService : Service(), SensorEventListener {
                     elapsedTime = newTime
                     startTimeMillis = System.currentTimeMillis() - (elapsedTime * 1000L)
                 }
-                isPaused = intent.getBooleanExtra("isPaused", isPaused)
+                val newPaused = intent.getBooleanExtra("isPaused", isPaused)
+                setPausedState(newPaused)
                 batteryThreshold = intent.getIntExtra("batteryThreshold", batteryThreshold)
                 updateNotification()
             }
@@ -433,20 +469,29 @@ class TravelSenseService : Service(), SensorEventListener {
         val mainActivityIntent = packageManager.getLaunchIntentForPackage(packageName)
         val mainPendingIntent = PendingIntent.getActivity(this, 2, mainActivityIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+        val notificationBuilder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("$statusText")
-            .setContentText("$timeText")
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .setContentIntent(mainPendingIntent)
             .setOngoing(true)
             .setAutoCancel(false)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_NAVIGATION)
+            .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setSilent(true) // Ensure it is silent
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .addAction(android.R.drawable.ic_media_pause, pauseResumeText, pausePendingIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Exit", exitPendingIntent)
-            .build()
-            
+
+        if (isPaused) {
+            notificationBuilder.setUsesChronometer(false)
+            notificationBuilder.setContentText("Time: $timeText")
+        } else {
+            notificationBuilder.setUsesChronometer(true)
+            notificationBuilder.setWhen(System.currentTimeMillis() - (elapsedTime * 1000L))
+        }
+
+        val notification = notificationBuilder.build()
         notification.flags = notification.flags or Notification.FLAG_ONGOING_EVENT or Notification.FLAG_NO_CLEAR
         return notification
     }
@@ -463,14 +508,20 @@ class TravelSenseService : Service(), SensorEventListener {
             val serviceChannel = NotificationChannel(
                 CHANNEL_ID,
                 "TravelSense Foreground Service",
-                NotificationManager.IMPORTANCE_DEFAULT
-            )
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                setSound(null, null)
+                enableVibration(false)
+                enableLights(false)
+                setShowBadge(false)
+            }
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(serviceChannel)
         }
     }
 
     private fun updateNotification() {
+        lastNotificationUpdateTime = System.currentTimeMillis()
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(1, buildNotification())
     }
