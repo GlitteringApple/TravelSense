@@ -5,6 +5,7 @@ import {
   Image,
   ImageBackground,
   ScrollView,
+  FlatList,
   Button,
   TextInput,
   StyleSheet,
@@ -43,6 +44,14 @@ import Animated, {
   useAnimatedStyle,
   withTiming,
   interpolate,
+  SlideInDown,
+  SlideOutDown,
+  SlideInRight,
+  SlideOutLeft,
+  SlideInLeft,
+  SlideOutRight,
+  SlideInUp,
+  SlideOutUp,
 } from 'react-native-reanimated';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import {
@@ -52,7 +61,7 @@ import {
 } from '@react-navigation/drawer';
 import Svg, { Polygon } from 'react-native-svg';
 import * as Progress from 'react-native-progress';
-import MapView, { PROVIDER_GOOGLE, Marker, Callout } from 'react-native-maps';
+import MapView, { PROVIDER_GOOGLE, Marker, Callout, Polyline } from 'react-native-maps';
 import { Accelerometer, Gyroscope } from "expo-sensors";
 import {
   Canvas,
@@ -65,6 +74,7 @@ import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { SettingsProvider, useSettings } from './src/contexts/SettingsContext';
 import * as Battery from 'expo-battery';
 import Slider from '@react-native-community/slider';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export const RecordingContext = createContext({
   isPaused: false,
@@ -81,6 +91,39 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import Feather from '@expo/vector-icons/Feather';
 import FontAwesome5 from '@expo/vector-icons/FontAwesome5';
 import * as DocumentPicker from 'expo-document-picker';
+
+const GOOGLE_PLACES_API_KEY = process.env.EXPO_PUBLIC_GOOGLE_PLACES_API_KEY;
+
+/* ------------------ Utilities ------------------ */
+
+// Decode Google's encoded polyline format into an array of {latitude, longitude}
+function decodePolyline(encoded) {
+  const points = [];
+  let index = 0, lat = 0, lng = 0;
+  while (index < encoded.length) {
+    let b, shift = 0, result = 0;
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    lat += (result & 1) ? ~(result >> 1) : (result >> 1);
+    shift = 0; result = 0;
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    lng += (result & 1) ? ~(result >> 1) : (result >> 1);
+    points.push({ latitude: lat / 1e5, longitude: lng / 1e5 });
+  }
+  return points;
+}
+
+// Strip HTML tags from direction instructions
+function stripHtml(html) {
+  return html ? html.replace(/<[^>]*>/g, '') : '';
+}
 
 /* ------------------ Screens ------------------ */
 
@@ -105,9 +148,98 @@ function HomeScreen() {
   const screenWidth = Dimensions.get('window').width;
   const [isSearchBarFocused, setSearchBarFocused] = useState(true);
   const inputRef = useRef(null);
+  const mapRef = useRef(null);
+  const { colorTheme, isDarkMode } = useSettings();
+  const themeColors = {
+    background: isDarkMode ? '#121212' : '#f5f5f5',
+    card: isDarkMode ? '#1e1e1e' : '#ffffff',
+    text: isDarkMode ? '#ffffff' : '#000000',
+    textSecondary: isDarkMode ? '#aaaaaa' : '#666666',
+    border: isDarkMode ? '#333333' : '#e0e0e0',
+  };
+
+  useEffect(() => {
+    navigation.getParent()?.setOptions({
+      tabBarStyle: isNavigating ? { display: 'none' } : {
+        display: 'flex',
+        backgroundColor: themeColors.card,
+        borderTopColor: themeColors.border,
+      }
+    });
+    return () => {
+      navigation.getParent()?.setOptions({ tabBarStyle: { display: 'flex' } });
+    };
+  }, [isNavigating, navigation, isDarkMode, themeColors]);
+
+  // Search state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [selectedPlace, setSelectedPlace] = useState(null);
+
+  // Directions & Navigation state
+  const [routes, setRoutes] = useState([]);           // Array of decoded route objects
+  const [selectedRouteIndex, setSelectedRouteIndex] = useState(0);
+  const [showRoutes, setShowRoutes] = useState(false); // Directions mode
+  const [isNavigating, setIsNavigating] = useState(false); // Driving/nav mode
+  const [currentStepIndex, setCurrentStepIndex] = useState(0);
+  const [isFetchingRoutes, setIsFetchingRoutes] = useState(false);
+  const userLocationRef = useRef(null);
+
+  // Place details state
+  const [placeDetails, setPlaceDetails] = useState(null); // { rating, travelTime, travelDistance }
+
+  // Animation states for the cards
+  const [detailsEnterAnim, setDetailsEnterAnim] = useState(() => SlideInDown.duration(400));
+  const [detailsExitAnim, setDetailsExitAnim] = useState(() => SlideOutDown.duration(400));
+
+  const [topBarHeight, setTopBarHeight] = useState(0);
+  const [initialRegion, setInitialRegion] = useState(null);
+
+  // Load last saved location as initial region, then update it as user moves
+  useEffect(() => {
+    (async () => {
+      try {
+        // Immediately restore last known position
+        const saved = await AsyncStorage.getItem('lastLocation');
+        if (saved) {
+          const { latitude, longitude } = JSON.parse(saved);
+          setInitialRegion({ latitude, longitude, latitudeDelta: 0.01, longitudeDelta: 0.01 });
+        }
+        // Then get current position and save it
+        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        const coords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
+        await AsyncStorage.setItem('lastLocation', JSON.stringify(coords));
+        // If we had no saved location, fly to current
+        if (!saved) {
+          setInitialRegion({ ...coords, latitudeDelta: 0.01, longitudeDelta: 0.01 });
+        }
+      } catch (e) {
+        console.warn('Could not load/save startup location:', e);
+      }
+    })();
+
+    // Continuously save location in background
+    let sub;
+    (async () => {
+      sub = await Location.watchPositionAsync(
+        { accuracy: Location.Accuracy.Balanced, distanceInterval: 100 },
+        async (loc) => {
+          try {
+            await AsyncStorage.setItem('lastLocation', JSON.stringify({
+              latitude: loc.coords.latitude,
+              longitude: loc.coords.longitude,
+            }));
+          } catch (e) {}
+        }
+      );
+    })();
+    return () => { if (sub) sub.remove(); };
+  }, []);
 
   const onLayout = (event) => {
     maxSearchWidth.value = event.nativeEvent.layout.width;
+    setTopBarHeight(event.nativeEvent.layout.height);
   };
 
   const toggleInput = () => {
@@ -123,12 +255,19 @@ function HomeScreen() {
   };
 
   useEffect(() => {
-    const keybHidden = Keyboard.addListener('keyboardDidHide', () => toggleSearch());
+    const keybHidden = Keyboard.addListener('keyboardDidHide', () => {
+      // Only collapse if there are no search results showing AND no place is selected AND no text is entered
+      if (searchResults.length === 0 && !selectedPlace && searchQuery.trim().length === 0) {
+        if (!isSearchBarFocused) {
+          toggleSearch();
+        }
+      }
+    });
 
     return () => {
       keybHidden.remove();
     };
-  }, [isSearchBarFocused]);
+  }, [isSearchBarFocused, searchResults, selectedPlace, searchQuery]);
 
   //Smoothly animates expansion and collapse from 0 to 1.
   const toggleSearch = () => {
@@ -147,9 +286,417 @@ function HomeScreen() {
         progress.value = withTiming(0, {
           duration: 300,
         });
+        // Clear search state when collapsing
+        setSearchResults([]);
+        setSearchQuery('');
+        setSelectedPlace(null);
+        setRoutes([]);
+        setShowRoutes(false);
+        setIsNavigating(false);
       }
     }
   };
+
+  // Clear current search state
+  const clearSearch = () => {
+    setDetailsExitAnim(SlideOutDown.duration(400));
+    setTimeout(() => {
+      setSearchQuery('');
+      setSearchResults([]);
+      setSelectedPlace(null);
+      setRoutes([]);
+      setShowRoutes(false);
+      setIsNavigating(false);
+      Keyboard.dismiss();
+    }, 0);
+  };
+
+  // Search places using Google Places API (New) - only on Enter
+  const searchPlaces = async (query) => {
+    if (!query || query.trim().length === 0) return;
+    if (!GOOGLE_PLACES_API_KEY) {
+      Alert.alert('Missing API Key', 'EXPO_PUBLIC_GOOGLE_PLACES_API_KEY is not set in your .env file.');
+      return;
+    }
+
+    setIsSearching(true);
+    setSelectedPlace(null);
+    setRoutes([]);
+    setShowRoutes(false);
+    setIsNavigating(false);
+    try {
+      let locationBias = {};
+      try {
+        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        locationBias = {
+          circle: {
+            center: { latitude: loc.coords.latitude, longitude: loc.coords.longitude },
+            radius: 5000.0, // 5km radius bias
+          },
+        };
+      } catch (e) {
+        console.warn('Could not get location for search bias:', e);
+      }
+
+      const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY,
+          'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.id',
+        },
+        body: JSON.stringify({
+          textQuery: query.trim(),
+          ...(locationBias.circle && { locationBias }),
+        }),
+      });
+
+      const data = await response.json();
+      if (data.places && data.places.length > 0) {
+        setSearchResults(data.places.slice(0, 5)); // Limit to 5 results
+      } else {
+        setSearchResults([]);
+        Alert.alert('No Results', 'No places found for your search.');
+      }
+    } catch (error) {
+      console.error('Places search error:', error);
+      Alert.alert('Search Error', error.message || 'Failed to search places.');
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  // Select a place from the dropdown or map
+  const selectPlace = (place) => {
+    const { latitude, longitude } = place.location;
+    setDetailsEnterAnim(SlideInDown.duration(400));
+    setDetailsExitAnim(SlideOutDown.duration(400));
+    setSelectedPlace(place);
+    setSearchResults([]);
+    setSearchQuery('');
+    setPlaceDetails({ loading: true }); // show placeholders while fetching
+    Keyboard.dismiss();
+
+    // Close and clear the search bar
+    setSearchBarFocused(true); // true means it becomes read-only
+    progress.value = withTiming(0, { duration: 300 });
+
+    // Animate map to the selected place
+    mapRef.current?.animateToRegion(
+      {
+        latitude,
+        longitude,
+        latitudeDelta: 0.01,
+        longitudeDelta: 0.01,
+      },
+      800
+    );
+
+    // Fetch extra details in background (rating + ETA)
+    fetchPlaceDetails(place);
+  };
+
+  // Fetch rating from Places API and ETA from Directions API
+  const fetchPlaceDetails = async (place) => {
+    if (!GOOGLE_PLACES_API_KEY) return;
+    let rating = null;
+    let travelTime = null;
+    let travelDistance = null;
+
+    // Fetch rating if place has a Places ID
+    if (place.id && !place.id.startsWith('pin-')) {
+      try {
+        const res = await fetch(`https://places.googleapis.com/v1/places/${place.id}`, {
+          headers: {
+            'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY,
+            'X-Goog-FieldMask': 'rating,userRatingCount',
+          },
+        });
+        const data = await res.json();
+        if (data.rating) rating = data.rating;
+      } catch (e) { /* silent fail */ }
+    }
+
+    // Fetch quick ETA from Directions API
+    try {
+      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      const origin = `${loc.coords.latitude},${loc.coords.longitude}`;
+      const dest = `${place.location.latitude},${place.location.longitude}`;
+      const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${dest}&key=${GOOGLE_PLACES_API_KEY}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data.status === 'OK' && data.routes.length > 0) {
+        const leg = data.routes[0].legs[0];
+        travelTime = leg.duration.text;
+        travelDistance = leg.distance.text;
+      }
+    } catch (e) { /* silent fail */ }
+
+    setPlaceDetails({ rating, travelTime, travelDistance });
+  };
+
+  // Handle generic tap on the map to drop a pin
+  const handleMapPress = async (event) => {
+    if (isNavigating) return;
+    // Prevent accidental presses on existing markers/polylines from clearing state
+    if (event.nativeEvent.action === 'marker-press' || event.nativeEvent.action === 'polyline-press') return;
+
+    const { latitude, longitude } = event.nativeEvent.coordinate;
+    setSelectedPlace(null);
+    setSearchQuery('Fetching address...');
+    setRoutes([]);
+    setShowRoutes(false);
+
+    try {
+      const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latitude},${longitude}&key=${GOOGLE_PLACES_API_KEY}`;
+      const response = await fetch(url);
+      const data = await response.json();
+
+      if (data.status === 'OK' && data.results.length > 0) {
+        const result = data.results[0];
+        const readableName = result.formatted_address.split(',')[0];
+        const newPlace = {
+          id: result.place_id,
+          displayName: { text: readableName === 'Unnamed Road' ? 'Dropped Pin' : readableName },
+          formattedAddress: result.formatted_address,
+          location: { latitude, longitude }
+        };
+        selectPlace(newPlace);
+      } else {
+        // Fallback if reverse geocode fails
+        const fallback = {
+          id: `pin-${Date.now()}`,
+          displayName: { text: 'Dropped Pin' },
+          formattedAddress: `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`,
+          location: { latitude, longitude }
+        };
+        selectPlace(fallback);
+      }
+    } catch (error) {
+      console.error('Reverse geocode error:', error);
+    }
+  };
+
+  // Handle direct clicks on map labeled POIs
+  const handlePoiClick = (event) => {
+    if (isNavigating) return;
+    const { placeId, name, coordinate } = event.nativeEvent;
+    const newPlace = {
+      id: placeId,
+      displayName: { text: name },
+      formattedAddress: name,
+      location: coordinate
+    };
+    selectPlace(newPlace);
+  };
+
+  // Fetch directions with alternative routes from Google Directions API
+  const fetchDirections = async (skipShow = false) => {
+    const shouldSkipUI = skipShow === true;
+    if (!shouldSkipUI) {
+      setDetailsExitAnim(SlideOutLeft.duration(400));
+    }
+
+    if (!selectedPlace) return;
+    if (!GOOGLE_PLACES_API_KEY) {
+      Alert.alert('Missing API Key', 'EXPO_PUBLIC_GOOGLE_PLACES_API_KEY is not set in your .env file.');
+      return;
+    }
+
+    setIsFetchingRoutes(true);
+    try {
+      // Get current user location as origin
+      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      userLocationRef.current = loc.coords;
+      const origin = `${loc.coords.latitude},${loc.coords.longitude}`;
+      const dest = `${selectedPlace.location.latitude},${selectedPlace.location.longitude}`;
+
+      const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${dest}&alternatives=true&key=${GOOGLE_PLACES_API_KEY}`;
+      const response = await fetch(url);
+      const data = await response.json();
+
+      if (data.status === 'OK' && data.routes && data.routes.length > 0) {
+        const parsedRoutes = data.routes.map((route, idx) => {
+          const leg = route.legs[0];
+          const polylinePoints = decodePolyline(route.overview_polyline.points);
+          return {
+            index: idx,
+            points: polylinePoints,
+            summary: route.summary,
+            distance: leg.distance.text,
+            duration: leg.duration.text,
+            steps: leg.steps.map((step) => ({
+              instruction: stripHtml(step.html_instructions),
+              distance: step.distance.text,
+              duration: step.duration.text,
+              startLocation: step.start_location,
+              endLocation: step.end_location,
+              polyline: decodePolyline(step.polyline.points),
+            })),
+          };
+        });
+
+        setRoutes(parsedRoutes);
+        setSelectedRouteIndex(0);
+
+        if (!shouldSkipUI) {
+          setShowRoutes(true);
+          // Fit map to show full route
+          const allPoints = parsedRoutes[0].points;
+          if (allPoints.length > 0) {
+            mapRef.current?.fitToCoordinates(allPoints, {
+              edgePadding: { top: 120, right: 60, bottom: 250, left: 60 },
+              animated: true,
+            });
+          }
+        }
+        return parsedRoutes;
+      } else {
+        Alert.alert('No Routes', data.status === 'ZERO_RESULTS'
+          ? 'No driving routes found to this destination.'
+          : `Directions API error: ${data.status}`);
+        return [];
+      }
+    } catch (error) {
+      console.error('Directions fetch error:', error);
+      Alert.alert('Directions Error', error.message || 'Failed to fetch directions.');
+      return [];
+    } finally {
+      setIsFetchingRoutes(false);
+    }
+  };
+
+  // Enter driving/navigation mode
+  const startNavigation = async () => {
+    let currentRoutes = routes;
+    const wasInOverview = showRoutes;
+
+    if (currentRoutes.length === 0) {
+      // Fetch routes but skip the selection overview
+      currentRoutes = await fetchDirections(true);
+    }
+
+    if (!currentRoutes || currentRoutes.length === 0) {
+      return;
+    }
+
+    setDetailsExitAnim(SlideOutDown.duration(400));
+    setDetailsExitAnim(SlideOutDown.duration(400));
+    setIsNavigating(true);
+    setCurrentStepIndex(0);
+    setShowRoutes(false);
+
+    // If starting navigation directly (e.g. from chip), default to fastest route (0).
+    // If starting from overview, use the route the user manually selected.
+    if (!wasInOverview) {
+      setSelectedRouteIndex(0);
+    }
+
+    // Tilt map immediately using last known location (avoids blocking delay)
+    if (userLocationRef.current) {
+      const { latitude, longitude, heading } = userLocationRef.current;
+      mapRef.current?.animateCamera(
+        {
+          center: { latitude, longitude },
+          pitch: 60,
+          heading: heading || 0,
+          zoom: 17,
+        },
+        { duration: 1000 }
+      );
+    }
+
+    // Refresh high-accuracy location in the background without blocking the UI
+    Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High })
+      .then(loc => {
+        userLocationRef.current = loc.coords;
+      })
+      .catch(e => console.error('Location error for nav mode:', e));
+
+  };
+
+  // Track user location during navigation to update current step
+  useEffect(() => {
+    if (!isNavigating || routes.length === 0) return;
+
+    const selectedRoute = routes[selectedRouteIndex];
+    if (!selectedRoute) return;
+
+    let locationSub;
+    (async () => {
+      locationSub = await Location.watchPositionAsync(
+        { accuracy: Location.Accuracy.High, distanceInterval: 10 },
+        (loc) => {
+          userLocationRef.current = loc.coords;
+          const { latitude, longitude } = loc.coords;
+
+          // Update camera to follow user with tilt
+          mapRef.current?.animateCamera(
+            {
+              center: { latitude, longitude },
+              pitch: 60,
+              heading: loc.coords.heading || 0,
+              zoom: 17,
+            },
+            { duration: 500 }
+          );
+
+          // Find nearest upcoming step
+          const steps = selectedRoute.steps;
+          let closestIdx = currentStepIndex;
+          let minDist = Infinity;
+          for (let i = currentStepIndex; i < steps.length; i++) {
+            const stepEnd = steps[i].endLocation;
+            const dist = Math.sqrt(
+              Math.pow(latitude - stepEnd.lat, 2) +
+              Math.pow(longitude - stepEnd.lng, 2)
+            );
+            if (dist < minDist) {
+              minDist = dist;
+              closestIdx = i;
+            }
+          }
+          // If very close to end of current step, advance
+          if (closestIdx > currentStepIndex || minDist < 0.0003) {
+            setCurrentStepIndex(Math.min(closestIdx, steps.length - 1));
+          }
+        }
+      );
+    })();
+
+    return () => {
+      if (locationSub) locationSub.remove();
+    };
+  }, [isNavigating, selectedRouteIndex, routes]);
+
+  // Exit navigation / directions mode
+  const exitNavigation = () => {
+    setDetailsEnterAnim(SlideInDown.duration(400)); // Moves UP from below
+    setDetailsExitAnim(SlideOutDown.duration(400));
+    setIsNavigating(false);
+    setShowRoutes(false);
+    setRoutes([]);
+    setCurrentStepIndex(0);
+
+    // Reset camera to normal top-down view
+    if (userLocationRef.current) {
+      mapRef.current?.animateCamera(
+        {
+          center: {
+            latitude: userLocationRef.current.latitude,
+            longitude: userLocationRef.current.longitude,
+          },
+          pitch: 0,
+          heading: 0,
+          zoom: 15,
+        },
+        { duration: 800 }
+      );
+    }
+  };
+
+  // Route colors
+  const ROUTE_COLORS = ['#003CB3', '#4285F4', '#34A853', '#FBBC04', '#EA4335'];
 
   //Resizes the input field container.
   const searchBarStyle = useAnimatedStyle(() => {
@@ -234,10 +781,17 @@ function HomeScreen() {
   return (
     <View style={styles.fullscreen}>
       <MapView
+        ref={mapRef}
         provider={PROVIDER_GOOGLE}
         style={StyleSheet.absoluteFillObject}
         showsUserLocation={true}
-        followsUserLocation={true}
+        showsMyLocationButton={false}
+        followsUserLocation={isNavigating}
+        showsTraffic={showRoutes || isNavigating}
+        showsCompass={isNavigating}
+        onPress={handleMapPress}
+        onPoiClick={handlePoiClick}
+        initialRegion={initialRegion || undefined}
         onRegionChangeComplete={(region) => {
           setZoomLevel(region.longitudeDelta);
         }}
@@ -246,56 +800,379 @@ function HomeScreen() {
           <Marker
             key={index}
             coordinate={{ latitude: pothole.gps_latitude, longitude: pothole.gps_longitude }}
-          >
-            {/* <View style={{ backgroundColor: 'transparent', alignItems: 'center', justifyContent: 'center', width: 38, height: 38 }}>
-              <Text style={{ fontSize: 24 }}>🕳️</Text>
-              {pothole.count > 1 && (
-                <View style={{ backgroundColor: 'red', borderRadius: 10, paddingHorizontal: 4, position: 'absolute', top: -5, right: -10 }}>
-                  <Text style={{ color: 'white', fontSize: 10, fontWeight: 'bold' }}>{pothole.count}</Text>
-                </View>
-              )}
-            </View> */}
-            {/* <Callout tooltip>
-              <View style={{ backgroundColor: 'white', borderRadius: 10, padding: 10, minWidth: 150, elevation: 5 }}>
-                <Text style={{ fontWeight: 'bold', fontSize: 16, marginBottom: 5 }}>Pothole Cluster</Text>
-                <Text>Count: {pothole.count}</Text>
-                <Text>Max Jolt: {pothole.maxSeverity.toFixed(2)} G</Text>
-                <Text style={{ fontSize: 10, color: 'gray', marginTop: 5 }}>Lat: {pothole.gps_latitude.toFixed(5)}</Text>
-                <Text style={{ fontSize: 10, color: 'gray' }}>Lng: {pothole.gps_longitude.toFixed(5)}</Text>
-              </View>
-            </Callout> */}
-          </Marker>
+          />
         ))}
+        {selectedPlace && (
+          <Marker
+            coordinate={{
+              latitude: selectedPlace.location.latitude,
+              longitude: selectedPlace.location.longitude,
+            }}
+            title={selectedPlace.displayName?.text}
+            description={selectedPlace.formattedAddress}
+            pinColor={colorTheme}
+          />
+        )}
+        {/* Route polylines – render with outline for contrast */}
+        {(showRoutes || isNavigating) && routes.map((route, idx) => {
+          const isSelected = idx === selectedRouteIndex;
+          if (isNavigating && !isSelected) return null;
+
+          // Render outline first
+          return (
+            <Polyline
+              key={`route-outline-${idx}`}
+              coordinates={route.points}
+              strokeColor={isDarkMode ? "#000000" : "#424242"}
+              strokeWidth={isSelected ? 10 : 7}
+              lineCap="round"
+              lineJoin="round"
+              zIndex={isSelected ? 2 : 1}
+            />
+          );
+        })}
+        {(showRoutes || isNavigating) && routes.map((route, idx) => {
+          const isSelected = idx === selectedRouteIndex;
+          if (isNavigating && !isSelected) return null;
+          
+          const strokeColor = isSelected ? colorTheme : '#BDBDBD';
+          return (
+            <Polyline
+              key={`route-main-${idx}`}
+              coordinates={route.points}
+              strokeColor={strokeColor}
+              strokeWidth={isSelected ? 6 : 4}
+              lineCap="round"
+              lineJoin="round"
+              tappable={!isSelected}
+              onPress={() => setSelectedRouteIndex(idx)}
+              zIndex={isSelected ? 4 : 3}
+            />
+          );
+        })}
       </MapView>
       <StatusBar translucent backgroundColor="transparent" barStyle={barStyle} />
-      {/* <ImageBackground source={mapImg} style={{ flex: 1 }}> */}
-      <View style={{ flex: 1 }}>
-        <SafeAreaView style={styles.wrapper} onLayout={onLayout}>
 
-          <ButtonRound onPress={() => {
-            navigation.openDrawer();
-            onRunFunction('dark-content')
-          }}>
-            <Entypo name="menu" size={24} color="black" />
-          </ButtonRound>
+      {/* Navigation Instruction Card (top, during driving mode) */}
+      {isNavigating && routes[selectedRouteIndex] && (
+        <Animated.View 
+          entering={SlideInUp.duration(400)} 
+          exiting={SlideOutUp.duration(400)} 
+          style={[styles.navInstructionCard, { backgroundColor: colorTheme }]}
+        >
+          <View style={styles.navInstructionRow}>
+            <View style={styles.navInstructionIconWrap}>
+              <MaterialIcons name="directions" size={28} color="white" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.navInstructionText} numberOfLines={2}>
+                {routes[selectedRouteIndex].steps[currentStepIndex]?.instruction || 'Proceed to route'}
+              </Text>
+              <Text style={styles.navInstructionSub}>
+                {routes[selectedRouteIndex].steps[currentStepIndex]?.distance || ''}
+                {' · '}
+                {routes[selectedRouteIndex].steps[currentStepIndex]?.duration || ''}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.navStepProgress}>
+            <Text style={styles.navStepProgressText}>
+              Step {currentStepIndex + 1} of {routes[selectedRouteIndex].steps.length}
+            </Text>
+          </View>
+        </Animated.View>
+      )}
 
-          <Pressable onPress={toggleSearch} style={{ flex: 0 }}>
-            <Animated.View style={[styles.searchContainer, searchBarStyle]}>
-              <Animated.View style={[styles.iconWrapper, iconStyle]}>
-                <FontAwesome name="search" size={20} color="black" />
-              </Animated.View>
-              <Animated.View style={[styles.inputWrapper, inputStyle]}>
-                <TextInput placeholder="Search TravelSense..." style={styles.input} ref={inputRef} readOnly={isSearchBarFocused} />
-              </Animated.View>
-            </Animated.View>
-          </Pressable>
+      <View style={{ flex: 1 }} pointerEvents="box-none">
+        {/* Top bar: hidden during navigation mode for cleaner driving view */}
+        {!isNavigating && (
+          <SafeAreaView style={styles.wrapper} onLayout={onLayout} pointerEvents="box-none">
 
-          <ButtonRound onPress={() => console.log("hello")}>
-            <Entypo name="location-pin" size={24} color="black" />
-          </ButtonRound>
+            <ButtonRound onPress={() => {
+              navigation.openDrawer();
+              onRunFunction('dark-content');
+            }} style={{ backgroundColor: themeColors.card }}>
+              <Entypo name="menu" size={24} color={themeColors.text} />
+            </ButtonRound>
 
-        </SafeAreaView>
+            <View style={{ flex: 1 }}>
+              <Pressable onPress={toggleSearch} style={{ flex: 0 }}>
+                <Animated.View style={[styles.searchContainer, searchBarStyle, { backgroundColor: themeColors.card }]}>
+                  <Animated.View style={[styles.iconWrapper, iconStyle]}>
+                    <FontAwesome name="search" size={20} color={themeColors.text} />
+                  </Animated.View>
+                  <Animated.View style={[styles.inputWrapper, inputStyle]}>
+                    <TextInput
+                      placeholder="Search TravelSense..."
+                      placeholderTextColor={themeColors.textSecondary}
+                      style={[styles.input, { color: themeColors.text, paddingRight: 40 }]}
+                      ref={inputRef}
+                      readOnly={isSearchBarFocused}
+                      value={searchQuery}
+                      onChangeText={setSearchQuery}
+                      onSubmitEditing={() => searchPlaces(searchQuery)}
+                      returnKeyType="search"
+                    />
+                    <View style={styles.searchRightIcons}>
+                      {isSearching ? (
+                        <ActivityIndicator size="small" color={colorTheme} style={{ marginRight: 8 }} />
+                      ) : (
+                        searchQuery.length > 0 && (
+                          <Pressable onPress={clearSearch} style={{ padding: 8 }}>
+                            <MaterialIcons name="close" size={20} color={themeColors.textSecondary} />
+                          </Pressable>
+                        )
+                      )}
+                    </View>
+                  </Animated.View>
+                </Animated.View>
+              </Pressable>
+            </View>
+
+            <ButtonRound onPress={() => {
+              if (userLocationRef.current) {
+                mapRef.current?.animateCamera({
+                  center: {
+                    latitude: userLocationRef.current.latitude,
+                    longitude: userLocationRef.current.longitude,
+                  },
+                  zoom: 15,
+                  pitch: 0,
+                  heading: 0,
+                }, { duration: 1000 });
+              }
+            }} style={{ backgroundColor: themeColors.card }}>
+              <MaterialIcons name="my-location" size={24} color={colorTheme} />
+            </ButtonRound>
+
+          </SafeAreaView>
+        )}
+
+        {/* Global Search Results Dropdown Overlay */}
+        {!isNavigating && searchResults.length > 0 && (
+          <View style={[
+            styles.dropdown,
+            {
+              backgroundColor: themeColors.card,
+              borderColor: themeColors.border,
+              left: 10,
+              top: topBarHeight + 0 // sit directly below search bar container
+            }
+          ]}>
+            <FlatList
+              data={searchResults}
+              keyExtractor={(item) => item.id}
+              keyboardShouldPersistTaps="handled"
+              renderItem={({ item }) => (
+                <Pressable
+                  style={[styles.dropdownItem, { borderBottomColor: themeColors.border }]}
+                  onPress={() => selectPlace(item)}
+                >
+                  <View style={[styles.dropdownIcon, { backgroundColor: isDarkMode ? '#333' : '#EEF2FF' }]}>
+                    <Entypo name="location-pin" size={20} color={colorTheme} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.dropdownTitle, { color: themeColors.text }]}>
+                      {item.displayName?.text || 'Unknown'}
+                    </Text>
+                    <Text style={[styles.dropdownSubtitle, { color: themeColors.textSecondary }]}>
+                      {item.formattedAddress || ''}
+                    </Text>
+                  </View>
+                </Pressable>
+              )}
+            />
+          </View>
+        )}
+
+        {/* Place Details Card (bottom, when place selected) */}
+        {selectedPlace && !showRoutes && !isNavigating && (
+          <Animated.View 
+            key={`details-${selectedPlace.id}`}
+            entering={detailsEnterAnim} 
+            exiting={detailsExitAnim} 
+            style={[styles.detailsCard, { backgroundColor: themeColors.card }]}
+          >
+            {/* Header + Close */}
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+              <View style={{ flex: 1, paddingRight: 10 }}>
+                <Text style={[styles.detailsTitle, { color: themeColors.text }]}>
+                  {selectedPlace.displayName?.text}
+                </Text>
+                <Text style={[styles.detailsAddress, { color: themeColors.textSecondary }]}>
+                  {selectedPlace.formattedAddress}
+                </Text>
+              </View>
+              <Pressable onPress={clearSearch} style={{ padding: 4, marginTop: -4, marginRight: -4 }}>
+                <MaterialIcons name="close" size={24} color={themeColors.textSecondary} />
+              </Pressable>
+            </View>
+
+            {/* Rating + ETA chips */}
+            {placeDetails && (
+              <View style={styles.detailsMeta}>
+                {(placeDetails.rating || placeDetails.loading) && (
+                  <View style={[styles.detailsChip, { borderColor: '#FFC107', backgroundColor: isDarkMode ? '#2a2000' : '#FFFBEA' }]}>
+                    <MaterialIcons name="star" size={15} color="#FFC107" />
+                    <Text style={[styles.detailsChipText, { color: '#B8860B' }]}>
+                      {placeDetails.rating ? placeDetails.rating.toFixed(1) : '-'}
+                    </Text>
+                  </View>
+                )}
+                {(placeDetails.travelTime || placeDetails.loading) && (
+                  <View style={[styles.detailsChip, { borderColor: colorTheme, backgroundColor: isDarkMode ? '#0d1a33' : '#EEF2FF' }]}>
+                    <MaterialIcons name="schedule" size={15} color={colorTheme} />
+                    <Text style={[styles.detailsChipText, { color: colorTheme }]}>
+                      {placeDetails.travelTime || '-'}
+                    </Text>
+                  </View>
+                )}
+                {(placeDetails.travelDistance || placeDetails.loading) && (
+                  <View style={[styles.detailsChip, { borderColor: themeColors.border, backgroundColor: isDarkMode ? '#252525' : '#F5F5F5' }]}>
+                    <MaterialIcons name="straighten" size={15} color={themeColors.textSecondary} />
+                    <Text style={[styles.detailsChipText, { color: themeColors.textSecondary }]}>
+                      {placeDetails.travelDistance || '-'}
+                    </Text>
+                  </View>
+                )}
+              </View>
+            )}
+
+            <View style={styles.navChipsRow}>
+              <Pressable
+                style={[
+                  styles.routeOption,
+                  {
+                    flex: 1,
+                    marginRight: 8,
+                    alignItems: 'center',
+                    flexDirection: 'row',
+                    justifyContent: 'center',
+                    gap: 8,
+                    paddingVertical: 16,
+                    backgroundColor: isDarkMode ? '#2c2c2c' : '#F5F5F5',
+                    borderColor: colorTheme,
+                  },
+                ]}
+                onPress={() => {
+                  setDetailsExitAnim(SlideOutLeft.duration(400));
+                  fetchDirections();
+                }}
+                disabled={isFetchingRoutes}
+              >
+                {isFetchingRoutes
+                  ? <ActivityIndicator size="small" color={colorTheme} />
+                  : <MaterialIcons name="directions" size={22} color={colorTheme} />
+                }
+                <Text style={[styles.routeOptionDuration, { color: colorTheme, fontSize: 16 }]}>Directions</Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.routeOption,
+                  {
+                    flex: 1,
+                    marginRight: 0,
+                    alignItems: 'center',
+                    flexDirection: 'row',
+                    justifyContent: 'center',
+                    gap: 8,
+                    paddingVertical: 16,
+                    backgroundColor: colorTheme,
+                    borderColor: colorTheme,
+                  },
+                ]}
+                onPress={startNavigation}
+              >
+                <MaterialIcons name="navigation" size={22} color="white" />
+                <Text style={[styles.routeOptionDuration, { color: 'white', fontSize: 16 }]}>Start</Text>
+              </Pressable>
+            </View>
+
+
+          </Animated.View>
+        )}
       </View>
+
+      {/* Route Info Panel (bottom, during directions mode) */}
+      {showRoutes && !isNavigating && routes.length > 0 && (
+        <Animated.View 
+          key="route-panel"
+          entering={SlideInRight.duration(400)} 
+          exiting={SlideOutRight.duration(400)} 
+          style={[styles.routePanel, { backgroundColor: themeColors.card }]}
+        >
+          <View style={styles.routePanelHeader}>
+            <Text style={[styles.routePanelTitle, { color: themeColors.text }]}>
+              {selectedPlace?.displayName?.text || 'Destination'}
+            </Text>
+            <Pressable onPress={exitNavigation} style={styles.routePanelClose}>
+              <MaterialIcons name="arrow-back" size={22} color={themeColors.textSecondary} />
+            </Pressable>
+          </View>
+
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+            {routes.map((route, idx) => (
+              <Pressable
+                key={idx}
+                style={[
+                  styles.routeOption,
+                  { backgroundColor: isDarkMode ? '#2c2c2c' : '#F5F5F5' },
+                  idx === selectedRouteIndex && { borderColor: colorTheme, backgroundColor: isDarkMode ? '#1a237e' : '#EEF2FF' },
+                ]}
+                onPress={() => {
+                  setSelectedRouteIndex(idx);
+                  mapRef.current?.fitToCoordinates(route.points, {
+                    edgePadding: { top: 120, right: 60, bottom: 250, left: 60 },
+                    animated: true,
+                  });
+                }}
+              >
+                <Text style={[
+                  styles.routeOptionDuration,
+                  { color: themeColors.text },
+                  idx === selectedRouteIndex && { color: colorTheme },
+                ]}>
+                  {route.duration}
+                </Text>
+                <Text style={[styles.routeOptionDistance, { color: themeColors.textSecondary }]}>
+                  {route.distance} · via {route.summary}
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+
+          <Pressable 
+            style={[styles.startNavButton, { backgroundColor: colorTheme }]} 
+            onPress={() => {
+              setDetailsExitAnim(SlideOutDown.duration(400));
+              startNavigation();
+            }}
+          >
+            <MaterialIcons name="navigation" size={20} color="white" />
+            <Text style={styles.startNavButtonText}>Start Navigation</Text>
+          </Pressable>
+        </Animated.View>
+      )}
+
+      {/* Exit button during navigation mode */}
+      {isNavigating && (
+        <Animated.View 
+          entering={SlideInDown.duration(400)} 
+          exiting={SlideOutDown.duration(400)} 
+          style={styles.navExitContainer}
+        >
+          <View style={[styles.navEtaBar, { backgroundColor: themeColors.card }]}>
+            <View>
+              <Text style={[styles.navEtaDuration, { color: themeColors.text }]}>{routes[selectedRouteIndex]?.duration || ''}</Text>
+              <Text style={[styles.navEtaDistance, { color: themeColors.textSecondary }]}>{routes[selectedRouteIndex]?.distance || ''}</Text>
+            </View>
+            <Pressable style={styles.navExitButton} onPress={exitNavigation}>
+              <MaterialIcons name="close" size={20} color="white" />
+              <Text style={styles.navExitText}>Exit</Text>
+            </Pressable>
+          </View>
+        </Animated.View>
+      )}
     </View>
   );
 }
@@ -532,6 +1409,7 @@ function SettingsScreen() {
     engineType,
     setEngineType,
     colorTheme,
+    setColorTheme,
     storageIntegrationEnabled,
     toggleStorageIntegration,
     batteryThreshold,
@@ -614,7 +1492,7 @@ function SettingsScreen() {
             <Text style={[styles.settingTitle, { color: themeColors.text }]}>Battery Threshold</Text>
             <Text style={[styles.settingDesc, { color: themeColors.textSecondary, marginBottom: 10 }]}>Auto-pause recording below {batteryThreshold}%</Text>
             <Slider
-              style={{width: '100%', height: 40}}
+              style={{ width: '100%', height: 40 }}
               minimumValue={15}
               maximumValue={100}
               step={1}
@@ -676,14 +1554,31 @@ function Tabs() {
     console.log('Travelogue button pressed');
   };
 
+  const { colorTheme, isDarkMode } = useSettings();
+  const themeColors = {
+    card: isDarkMode ? '#1e1e1e' : '#ffffff',
+    border: isDarkMode ? '#333333' : '#e0e0e0',
+    activeTab: colorTheme,
+    inactiveTab: isDarkMode ? '#888888' : '#757575',
+  };
+
   return (
-    <Tab.Navigator screenOptions={{ animation: 'shift', headerShown: true }}>
+    <Tab.Navigator screenOptions={{
+      animation: 'shift',
+      headerShown: true,
+      tabBarActiveTintColor: themeColors.activeTab,
+      tabBarInactiveTintColor: themeColors.inactiveTab,
+      tabBarStyle: {
+        backgroundColor: themeColors.card,
+        borderTopColor: themeColors.border,
+      }
+    }}>
       <Tab.Screen
         name="Home"
         component={HomeScreen}
         options={{
           tabBarIcon: ({ color, size }) => (
-            <AntDesign name="home" size={24} color="black" />
+            <AntDesign name="home" size={24} color={color} />
           ),
           headerShown: false
         }} />
@@ -692,7 +1587,7 @@ function Tabs() {
         component={DataScreen}
         options={{
           tabBarIcon: ({ color, size }) => (
-            <AntDesign name="database" size={24} color="black" />
+            <AntDesign name="database" size={24} color={color} />
           )
         }} />
       <Tab.Screen
@@ -700,7 +1595,7 @@ function Tabs() {
         component={TravelogueScreen}
         options={{
           tabBarIcon: ({ color, size }) => (
-            <AntDesign name="book" size={24} color="black" />
+            <AntDesign name="book" size={24} color={color} />
           )
         }} />
     </Tab.Navigator>
@@ -809,13 +1704,13 @@ function BatteryAutoPauseManager() {
 
   return (
     <Modal visible={showModal} transparent animationType="fade">
-      <View style={{flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center'}}>
-        <View style={{backgroundColor: '#1a1a2e', padding: 25, borderRadius: 15, width: '80%', elevation: 5}}>
-           <Text style={{fontSize: 20, fontWeight: 'bold', marginBottom: 10, color: '#e0e0e0'}}>🔋 Low Battery</Text>
-           <Text style={{marginBottom: 20, color: '#a8a8b3', lineHeight: 22}}>Recording has been automatically paused because your battery fell below {batteryThreshold}%.</Text>
-           <Pressable onPress={() => setShowModal(false)} style={{backgroundColor: '#003CB3', padding: 12, borderRadius: 8, alignItems: 'center'}}>
-              <Text style={{color: 'white', fontWeight: 'bold'}}>I Understand</Text>
-           </Pressable>
+      <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' }}>
+        <View style={{ backgroundColor: '#1a1a2e', padding: 25, borderRadius: 15, width: '80%', elevation: 5 }}>
+          <Text style={{ fontSize: 20, fontWeight: 'bold', marginBottom: 10, color: '#e0e0e0' }}>🔋 Low Battery</Text>
+          <Text style={{ marginBottom: 20, color: '#a8a8b3', lineHeight: 22 }}>Recording has been automatically paused because your battery fell below {batteryThreshold}%.</Text>
+          <Pressable onPress={() => setShowModal(false)} style={{ backgroundColor: '#003CB3', padding: 12, borderRadius: 8, alignItems: 'center' }}>
+            <Text style={{ color: 'white', fontWeight: 'bold' }}>I Understand</Text>
+          </Pressable>
         </View>
       </View>
     </Modal>
@@ -850,7 +1745,7 @@ async function saveOptOut(val) {
 
 function NotificationPromptModal({ visible, onClose, onOptOut }) {
   const [checked, setChecked] = useState(false);
-  
+
   const handleEnable = () => {
     if (NativeModules.TravelSenseModule && NativeModules.TravelSenseModule.openNotificationSettings) {
       NativeModules.TravelSenseModule.openNotificationSettings();
@@ -869,50 +1764,50 @@ function NotificationPromptModal({ visible, onClose, onOptOut }) {
 
   return (
     <Modal visible={visible} transparent animationType="fade">
-      <View style={{flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center'}}>
-        <View style={{backgroundColor: '#1a1a2e', padding: 25, borderRadius: 15, width: '85%', elevation: 10, borderWidth: 1, borderColor: '#303050'}}>
-          <View style={{alignItems: 'center', marginBottom: 20}}>
+      <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' }}>
+        <View style={{ backgroundColor: '#1a1a2e', padding: 25, borderRadius: 15, width: '85%', elevation: 10, borderWidth: 1, borderColor: '#303050' }}>
+          <View style={{ alignItems: 'center', marginBottom: 20 }}>
             <MaterialIcons name="notifications-active" size={50} color="#00C853" />
-            <Text style={{color: 'white', fontSize: 22, fontWeight: 'bold', marginTop: 15, textAlign: 'center'}}>Keep Tracking Active</Text>
+            <Text style={{ color: 'white', fontSize: 22, fontWeight: 'bold', marginTop: 15, textAlign: 'center' }}>Keep Tracking Active</Text>
           </View>
-          
-          <Text style={{color: '#ccc', fontSize: 16, textAlign: 'center', marginBottom: 25, lineHeight: 22}}>
+
+          <Text style={{ color: '#ccc', fontSize: 16, textAlign: 'center', marginBottom: 25, lineHeight: 22 }}>
             Enable notifications to monitor your recording and access controls directly from your notification bar even in the background.
           </Text>
 
-          <Pressable 
-             onPress={() => setChecked(!checked)}
-             style={{flexDirection: 'row', alignItems: 'center', marginBottom: 25, alignSelf: 'center'}}
+          <Pressable
+            onPress={() => setChecked(!checked)}
+            style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 25, alignSelf: 'center' }}
           >
             <View style={{
-                width: 20, 
-                height: 20, 
-                borderRadius: 4, 
-                borderWidth: 2, 
-                borderColor: '#00C853', 
-                backgroundColor: checked ? '#00C853' : 'transparent',
-                justifyContent: 'center',
-                alignItems: 'center',
-                marginRight: 10
+              width: 20,
+              height: 20,
+              borderRadius: 4,
+              borderWidth: 2,
+              borderColor: '#00C853',
+              backgroundColor: checked ? '#00C853' : 'transparent',
+              justifyContent: 'center',
+              alignItems: 'center',
+              marginRight: 10
             }}>
-                {checked && <AntDesign name="check" size={14} color="white" />}
+              {checked && <AntDesign name="check" size={14} color="white" />}
             </View>
-            <Text style={{color: '#999', fontSize: 14}}>Don't remind me again</Text>
+            <Text style={{ color: '#999', fontSize: 14 }}>Don't remind me again</Text>
           </Pressable>
 
-          <View style={{flexDirection: 'column', gap: 10}}>
-            <Pressable 
+          <View style={{ flexDirection: 'column', gap: 10 }}>
+            <Pressable
               onPress={handleEnable}
-              style={{backgroundColor: '#00C853', paddingVertical: 14, borderRadius: 10, alignItems: 'center'}}
+              style={{ backgroundColor: '#00C853', paddingVertical: 14, borderRadius: 10, alignItems: 'center' }}
             >
-              <Text style={{color: 'white', fontWeight: 'bold', fontSize: 16}}>Enable in Settings</Text>
+              <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 16 }}>Enable in Settings</Text>
             </Pressable>
-            
-            <Pressable 
+
+            <Pressable
               onPress={handleNotNow}
-              style={{paddingVertical: 10, alignItems: 'center'}}
+              style={{ paddingVertical: 10, alignItems: 'center' }}
             >
-              <Text style={{color: '#666', fontWeight: '600', fontSize: 14}}>Not now</Text>
+              <Text style={{ color: '#666', fontWeight: '600', fontSize: 14 }}>Not now</Text>
             </Pressable>
           </View>
         </View>
@@ -938,8 +1833,8 @@ export default function App({ navigation }) {
       'Are you sure you want to exit?',
       [
         { text: 'Not really', style: 'cancel' },
-        { 
-          text: 'Yes', 
+        {
+          text: 'Yes',
           onPress: async () => {
             await SensorUpload.persistToDisk();
             if (NativeModules.TravelSenseModule && NativeModules.TravelSenseModule.exitApp) {
@@ -947,13 +1842,25 @@ export default function App({ navigation }) {
             } else {
               BackHandler.exitApp();
             }
-          } 
+          }
         },
       ]
     );
   };
 
   useEffect(() => {
+    // Request critical permissions on app startup
+    (async () => {
+      const { status: foreStatus } = await Location.requestForegroundPermissionsAsync();
+      if (foreStatus === 'granted') {
+        await Location.requestBackgroundPermissionsAsync();
+        if (NativeModules.TravelSenseModule && NativeModules.TravelSenseModule.requestActivityRecognitionPermission) {
+          await NativeModules.TravelSenseModule.requestActivityRecognitionPermission()
+            .catch(err => console.log('Activity permission request failed', err));
+        }
+      }
+    })();
+
     SensorUpload.loadFromDisk();
     if (!NativeModules.TravelSenseModule) return;
 
@@ -1100,7 +2007,7 @@ export default function App({ navigation }) {
   useEffect(() => {
     const checkNotificationStatus = async () => {
       if (hasCheckedNotifications.current) return;
-      
+
       try {
         const { status } = await Notifications.getPermissionsAsync();
         console.log("checkNotificationStatus: Current status:", status);
@@ -1117,7 +2024,7 @@ export default function App({ navigation }) {
     };
 
     checkNotificationStatus();
-    
+
     // Check when app resumes from background (Only if not already shown this session)
     const sub = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active' && !hasCheckedNotifications.current) {
@@ -1142,24 +2049,24 @@ export default function App({ navigation }) {
         </View>
       </Modal>
       <NavigationContainer ref={navigationRef}>
-          <Drawer.Navigator
-            drawerContent={(props) => <CustomDrawerContent {...props} />}
-            screenOptions={{
-              headerShown: false, drawerType: "front", detachInactiveScreens: false,
-            }}
-          >
-            <Drawer.Screen name="Main" component={DrawerStack} />
-          </Drawer.Navigator>
-      </NavigationContainer>
-        <NotificationPromptModal 
-          visible={showNotificationModal} 
-          onClose={() => setShowNotificationModal(false)}
-          onOptOut={async () => {
-             await saveOptOut(true);
-             setShowNotificationModal(false);
+        <Drawer.Navigator
+          drawerContent={(props) => <CustomDrawerContent {...props} />}
+          screenOptions={{
+            headerShown: false, drawerType: "front", detachInactiveScreens: false,
           }}
-        />
-      </RecordingContext.Provider>
+        >
+          <Drawer.Screen name="Main" component={DrawerStack} />
+        </Drawer.Navigator>
+      </NavigationContainer>
+      <NotificationPromptModal
+        visible={showNotificationModal}
+        onClose={() => setShowNotificationModal(false)}
+        onOptOut={async () => {
+          await saveOptOut(true);
+          setShowNotificationModal(false);
+        }}
+      />
+    </RecordingContext.Provider>
   );
 }
 
@@ -1284,5 +2191,285 @@ const styles = StyleSheet.create({
   input: {
     color: "gray",
     fontSize: 16,
+  },
+  dropdown: {
+    position: 'absolute',
+    top: 60,
+    backgroundColor: 'white',
+    borderRadius: 12,
+    maxHeight: 350,
+    elevation: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    overflow: 'hidden',
+    width: Dimensions.get('window').width - 20,
+    zIndex: 1000,
+  },
+  searchRightIcons: {
+    position: 'absolute',
+    right: 0,
+    height: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dropdownItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e8e8e8',
+  },
+  dropdownIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#EEF2FF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  dropdownTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  dropdownSubtitle: {
+    fontSize: 12,
+    color: '#888',
+    marginTop: 2,
+  },
+  navChipsRow: {
+    flexDirection: 'row',
+    marginTop: 8,
+    gap: 8,
+  },
+  navChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'white',
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    gap: 6,
+  },
+  navChipStart: {
+    backgroundColor: '#003CB3',
+  },
+  navChipText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#003CB3',
+  },
+  detailsCard: {
+    position: 'absolute',
+    bottom: 20,
+    left: 15,
+    right: 15,
+    borderRadius: 20,
+    padding: 20,
+    elevation: 15,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    zIndex: 900,
+  },
+  detailsTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 4,
+  },
+  detailsAddress: {
+    fontSize: 14,
+    marginBottom: 8,
+  },
+  detailsMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'nowrap',
+    gap: 6,
+    marginBottom: 16,
+  },
+  detailsChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    borderWidth: 1.5,
+    borderRadius: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+  },
+  detailsChipText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  // Route panel (bottom card during directions mode)
+  routePanel: {
+    position: 'absolute',
+    bottom: 20,
+    left: 15,
+    right: 15,
+    backgroundColor: 'white',
+    borderRadius: 20,
+    padding: 20,
+    elevation: 15,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    zIndex: 900,
+  },
+  routePanelHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  routePanelTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    flex: 1,
+  },
+  routePanelClose: {
+    padding: 4,
+  },
+  routeOption: {
+    backgroundColor: '#F5F5F5',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    marginRight: 10,
+    borderWidth: 2,
+    borderColor: 'transparent',
+    minWidth: 120,
+  },
+  routeOptionSelected: {
+    borderColor: '#003CB3',
+    backgroundColor: '#EEF2FF',
+  },
+  routeOptionDuration: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1a1a1a',
+  },
+  routeOptionDistance: {
+    fontSize: 12,
+    color: '#888',
+    marginTop: 2,
+  },
+  startNavButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#003CB3',
+    borderRadius: 25,
+    paddingVertical: 14,
+    gap: 8,
+  },
+  startNavButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  // Navigation instruction card (top, driving mode)
+  navInstructionCard: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#003CB3',
+    paddingTop: 48,
+    paddingBottom: 14,
+    paddingHorizontal: 16,
+    elevation: 10,
+    zIndex: 10,
+  },
+  navInstructionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  navInstructionIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  navInstructionText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  navInstructionSub: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 13,
+    marginTop: 2,
+  },
+  navStepProgress: {
+    marginTop: 8,
+    alignItems: 'flex-end',
+  },
+  navStepProgressText: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 11,
+  },
+  // ETA bar + exit button (bottom, driving mode)
+  navExitContainer: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    paddingHorizontal: 16,
+    paddingBottom: 30,
+  },
+  navEtaBar: {
+    backgroundColor: 'white',
+    borderRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+  },
+  navEtaDuration: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1a1a1a',
+  },
+  navEtaDistance: {
+    fontSize: 13,
+    color: '#888',
+    marginTop: 2,
+  },
+  navExitButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#D32F2F',
+    borderRadius: 20,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    gap: 4,
+  },
+  navExitText: {
+    color: 'white',
+    fontWeight: '600',
+    fontSize: 14,
   },
 });

@@ -1,8 +1,8 @@
 import {Pressable, StyleSheet} from "react-native";
 
-export default function ButtonRound({onPress, children, size = 50}) {
+export default function ButtonRound({onPress, children, size = 50}, style) {
     return (
-    <Pressable onPress={onPress} style={[buttonStyles.circle, {width: size, height: size, borderRadius: size/2}]}>
+    <Pressable onPress={onPress} style={[buttonStyles.circle, {width: size, height: size, borderRadius: size/2}, style]}>
             {children}  
         </Pressable>
     )
