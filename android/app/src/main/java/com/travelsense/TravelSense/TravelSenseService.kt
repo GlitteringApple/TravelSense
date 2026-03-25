@@ -204,7 +204,7 @@ class TravelSenseService : Service(), SensorEventListener {
                 // Get Device ID
                 val deviceId = android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "unknown_device"
                 
-                val fileName = "${timestampStr}_${deviceId}_sensor_data.json"
+                val fileName = "${timestampStr}_${deviceId}.json"
                 val dataFile = File(fileDir, fileName)
                 
                 // Read existing data robustly

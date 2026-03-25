@@ -149,7 +149,7 @@ function HomeScreen() {
   const [isSearchBarFocused, setSearchBarFocused] = useState(true);
   const inputRef = useRef(null);
   const mapRef = useRef(null);
-  const { colorTheme, isDarkMode } = useSettings();
+  const { colorTheme, isDarkMode, checkApiLimit, incrementApiUsage } = useSettings();
   const themeColors = {
     background: isDarkMode ? '#121212' : '#f5f5f5',
     card: isDarkMode ? '#1e1e1e' : '#ffffff',
@@ -177,6 +177,18 @@ function HomeScreen() {
   const [isSearching, setIsSearching] = useState(false);
   const [selectedPlace, setSelectedPlace] = useState(null);
 
+  // Routing Search state
+  const [isRoutingMode, setIsRoutingMode] = useState(false);
+  const [startSearchQuery, setStartSearchQuery] = useState('Your location');
+  const [startPlace, setStartPlace] = useState({
+    id: 'your_location',
+    displayName: { text: 'Your location' },
+    formattedAddress: 'Current location',
+    location: null
+  });
+  const [activeSearchField, setActiveSearchField] = useState('dest'); // 'start' or 'dest'
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+
   // Directions & Navigation state
   const [routes, setRoutes] = useState([]);           // Array of decoded route objects
   const [selectedRouteIndex, setSelectedRouteIndex] = useState(0);
@@ -185,6 +197,13 @@ function HomeScreen() {
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [isFetchingRoutes, setIsFetchingRoutes] = useState(false);
   const userLocationRef = useRef(null);
+  
+  const [isPreviewMode, setIsPreviewMode] = useState(false);
+  const [isFollowingUser, setIsFollowingUser] = useState(true);
+
+  // Focus Refs
+  const startInputRef = useRef(null);
+  const destInputRef = useRef(null);
 
   // Place details state
   const [placeDetails, setPlaceDetails] = useState(null); // { rating, travelTime, travelDistance }
@@ -209,8 +228,16 @@ function HomeScreen() {
         // Then get current position and save it
         const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
         const coords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
+        userLocationRef.current = coords; // Ensure ref is set immediately
         await AsyncStorage.setItem('lastLocation', JSON.stringify(coords));
-        // If we had no saved location, fly to current
+        
+        // Always fly to current location on startup for a better experience
+        mapRef.current?.animateToRegion({
+          ...coords,
+          latitudeDelta: 0.01,
+          longitudeDelta: 0.01,
+        }, 1000);
+
         if (!saved) {
           setInitialRegion({ ...coords, latitudeDelta: 0.01, longitudeDelta: 0.01 });
         }
@@ -230,7 +257,7 @@ function HomeScreen() {
               latitude: loc.coords.latitude,
               longitude: loc.coords.longitude,
             }));
-          } catch (e) {}
+          } catch (e) { }
         }
       );
     })();
@@ -255,7 +282,9 @@ function HomeScreen() {
   };
 
   useEffect(() => {
+    const keybDidShow = Keyboard.addListener('keyboardDidShow', () => setIsKeyboardVisible(true));
     const keybHidden = Keyboard.addListener('keyboardDidHide', () => {
+      setIsKeyboardVisible(false);
       // Only collapse if there are no search results showing AND no place is selected AND no text is entered
       if (searchResults.length === 0 && !selectedPlace && searchQuery.trim().length === 0) {
         if (!isSearchBarFocused) {
@@ -265,6 +294,7 @@ function HomeScreen() {
     });
 
     return () => {
+      keybDidShow.remove();
       keybHidden.remove();
     };
   }, [isSearchBarFocused, searchResults, selectedPlace, searchQuery]);
@@ -293,6 +323,15 @@ function HomeScreen() {
         setRoutes([]);
         setShowRoutes(false);
         setIsNavigating(false);
+        setIsRoutingMode(false);
+        setStartSearchQuery('Your location');
+        setStartPlace({
+          id: 'your_location',
+          displayName: { text: 'Your location' },
+          formattedAddress: 'Current location',
+          location: null
+        });
+        setActiveSearchField('dest');
       }
     }
   };
@@ -300,6 +339,8 @@ function HomeScreen() {
   // Clear current search state
   const clearSearch = () => {
     setDetailsExitAnim(SlideOutDown.duration(400));
+    const shouldCollapse = searchQuery.trim().length === 0 && (startSearchQuery.trim().length === 0 || startSearchQuery === 'Your location');
+    
     setTimeout(() => {
       setSearchQuery('');
       setSearchResults([]);
@@ -307,24 +348,72 @@ function HomeScreen() {
       setRoutes([]);
       setShowRoutes(false);
       setIsNavigating(false);
+      setIsRoutingMode(false);
+      setStartSearchQuery('Your location');
+      setStartPlace({
+        id: 'your_location',
+        displayName: { text: 'Your location' },
+        formattedAddress: 'Current location',
+        location: null
+      });
+      setActiveSearchField('dest');
       Keyboard.dismiss();
+
+      if (shouldCollapse) {
+        setSearchBarFocused(false);
+        progress.value = withTiming(0, { duration: 300 });
+      }
     }, 0);
   };
 
+  // Intercept back button to close cards instead of exiting the app
+  useEffect(() => {
+    const onBackPress = () => {
+      if (isNavigating) {
+        // Since we are exiting from navigation mode back to the route panel (or clear it all),
+        // we'll follow exitNavigation logic. exitNavigation clears BOTH isNavigating and showRoutes
+        // so it goes back to the place details card natively right now.
+        exitNavigation();
+        return true;
+      }
+      if (showRoutes) {
+        // Just go back to the single place details card
+        setDetailsEnterAnim(SlideInLeft.duration(400));
+        setShowRoutes(false);
+        setIsRoutingMode(false);
+        return true;
+      }
+      if (selectedPlace) {
+        // Go from details card to an empty map
+        clearSearch();
+        return true;
+      }
+      return false; // Otherwise let it bubble up (e.g. to the app exit modal)
+    };
+
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => backHandler.remove();
+  }, [isNavigating, showRoutes, selectedPlace]);
+
   // Search places using Google Places API (New) - only on Enter
-  const searchPlaces = async (query) => {
+  const searchPlaces = async (query, field = activeSearchField) => {
     if (!query || query.trim().length === 0) return;
     if (!GOOGLE_PLACES_API_KEY) {
       Alert.alert('Missing API Key', 'EXPO_PUBLIC_GOOGLE_PLACES_API_KEY is not set in your .env file.');
       return;
     }
 
+    if (!checkApiLimit('places')) {
+      Alert.alert('API Limit Reached', 'You have reached the daily limit for the Places API.');
+      return;
+    }
+
     setIsSearching(true);
-    setSelectedPlace(null);
     setRoutes([]);
     setShowRoutes(false);
     setIsNavigating(false);
     try {
+      await incrementApiUsage('places');
       let locationBias = {};
       try {
         const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
@@ -369,17 +458,31 @@ function HomeScreen() {
   // Select a place from the dropdown or map
   const selectPlace = (place) => {
     const { latitude, longitude } = place.location;
-    setDetailsEnterAnim(SlideInDown.duration(400));
-    setDetailsExitAnim(SlideOutDown.duration(400));
-    setSelectedPlace(place);
     setSearchResults([]);
-    setSearchQuery('');
-    setPlaceDetails({ loading: true }); // show placeholders while fetching
     Keyboard.dismiss();
 
-    // Close and clear the search bar
-    setSearchBarFocused(true); // true means it becomes read-only
-    progress.value = withTiming(0, { duration: 300 });
+    let updatedStart = startPlace;
+    let updatedDest = selectedPlace;
+
+    if (activeSearchField === 'start') {
+      updatedStart = place;
+      setStartPlace(place);
+      setStartSearchQuery(place.displayName?.text || '');
+    } else {
+      updatedDest = place;
+      setSelectedPlace(place);
+      setSearchQuery(place.displayName?.text || '');
+      setDetailsEnterAnim(SlideInDown.duration(400));
+      setDetailsExitAnim(SlideOutDown.duration(400));
+      setPlaceDetails({ loading: true }); // show placeholders while fetching
+      fetchPlaceDetails(place);
+    }
+
+    // Move cursor to end to show the end of the name/address, but actually we will do this onFocus.
+
+    // Ensure search bar is open to show the selected name
+    setSearchBarFocused(true);
+    progress.value = withTiming(1, { duration: 300 });
 
     // Animate map to the selected place
     mapRef.current?.animateToRegion(
@@ -392,8 +495,15 @@ function HomeScreen() {
       800
     );
 
-    // Fetch extra details in background (rating + ETA)
-    fetchPlaceDetails(place);
+    if (activeSearchField === 'start') {
+      if (updatedDest) {
+        fetchDirections(false, updatedStart, updatedDest);
+      }
+    } else {
+      if (isRoutingMode && updatedStart) {
+        fetchDirections(false, updatedStart, updatedDest);
+      }
+    }
   };
 
   // Fetch rating from Places API and ETA from Directions API
@@ -403,9 +513,15 @@ function HomeScreen() {
     let travelTime = null;
     let travelDistance = null;
 
+    if (!checkApiLimit('places')) {
+       Alert.alert('API Limit Reached', 'You have reached the daily limit for the Places API.');
+       return;
+    }
+
     // Fetch rating if place has a Places ID
     if (place.id && !place.id.startsWith('pin-')) {
       try {
+        await incrementApiUsage('places');
         const res = await fetch(`https://places.googleapis.com/v1/places/${place.id}`, {
           headers: {
             'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY,
@@ -417,8 +533,13 @@ function HomeScreen() {
       } catch (e) { /* silent fail */ }
     }
 
+    if (!checkApiLimit('directions')) {
+      Alert.alert('API Limit Reached', 'You have reached the daily limit for the Directions API.');
+      return;
+    }
     // Fetch quick ETA from Directions API
     try {
+      await incrementApiUsage('directions');
       const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       const origin = `${loc.coords.latitude},${loc.coords.longitude}`;
       const dest = `${place.location.latitude},${place.location.longitude}`;
@@ -442,12 +563,25 @@ function HomeScreen() {
     if (event.nativeEvent.action === 'marker-press' || event.nativeEvent.action === 'polyline-press') return;
 
     const { latitude, longitude } = event.nativeEvent.coordinate;
-    setSelectedPlace(null);
-    setSearchQuery('Fetching address...');
+    if (activeSearchField === 'start') {
+      setStartPlace(null);
+      setStartSearchQuery('Fetching address...');
+    } else {
+      setSelectedPlace(null);
+      setSearchQuery('Fetching address...');
+      setDetailsExitAnim(SlideOutDown.duration(400));
+    }
+
     setRoutes([]);
     setShowRoutes(false);
 
+    if (!checkApiLimit('geocode')) {
+      Alert.alert('API Limit Reached', 'You have reached the daily limit for the Geocoding API.');
+      return;
+    }
+
     try {
+      await incrementApiUsage('geocode');
       const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latitude},${longitude}&key=${GOOGLE_PLACES_API_KEY}`;
       const response = await fetch(url);
       const data = await response.json();
@@ -490,26 +624,91 @@ function HomeScreen() {
     selectPlace(newPlace);
   };
 
+  // Initialize navigation mode (prepare directions UI)
+  const startNavigationMode = () => {
+    Keyboard.dismiss();
+
+    // Populate the inputs based on existing selected state
+    // Always use the last selected startPlace if it exists
+    if (!startPlace) {
+      const defaultStart = {
+        id: 'your_location',
+        displayName: { text: 'Your location' },
+        formattedAddress: 'Current location',
+        location: null
+      };
+      setStartPlace(defaultStart);
+      setStartSearchQuery('Your location');
+    } else {
+      // Use exactly what was last selected
+      setStartSearchQuery(startPlace.displayName?.text || '');
+    }
+
+    if (selectedPlace) {
+      setSearchQuery(selectedPlace.displayName?.text || '');
+    }
+
+    setIsFetchingRoutes(true);
+    setIsRoutingMode(true);
+    setRoutes([]); // Clear old routes immediately
+    setShowRoutes(false); // Hide the panel while fetching
+    
+    // If we are in routing mode, we want any currently visible details card to exit downwards
+    // and skip standard exit animations to go straight to route panel.
+    setDetailsExitAnim(SlideOutDown.duration(400));
+
+    // Wait for state to settle then fetch
+    setTimeout(() => {
+      fetchDirections();
+    }, 100);
+  };
+
   // Fetch directions with alternative routes from Google Directions API
-  const fetchDirections = async (skipShow = false) => {
+  const fetchDirections = async (skipShow = false, overrideStart = null, overrideDest = null) => {
     const shouldSkipUI = skipShow === true;
+    const currentStart = overrideStart || startPlace;
+    const currentDest = overrideDest || selectedPlace;
+
     if (!shouldSkipUI) {
       setDetailsExitAnim(SlideOutLeft.duration(400));
     }
 
-    if (!selectedPlace) return;
+    if (!currentDest) return;
     if (!GOOGLE_PLACES_API_KEY) {
       Alert.alert('Missing API Key', 'EXPO_PUBLIC_GOOGLE_PLACES_API_KEY is not set in your .env file.');
       return;
     }
 
     setIsFetchingRoutes(true);
+    setIsRoutingMode(true);
+    setRoutes([]); // Clear old routes immediately
+    setShowRoutes(false); // Hide the panel while fetching
+    
+    // If we are in routing mode, we want any currently visible details card to exit downwards
+    // and skip standard exit animations to go straight to route panel.
+    setDetailsExitAnim(SlideOutDown.duration(400));
+
+    if (!checkApiLimit('directions')) {
+      Alert.alert('API Limit Reached', 'You have reached the daily limit for the Directions API.');
+      setIsFetchingRoutes(false);
+      return [];
+    }
+
     try {
-      // Get current user location as origin
-      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-      userLocationRef.current = loc.coords;
-      const origin = `${loc.coords.latitude},${loc.coords.longitude}`;
-      const dest = `${selectedPlace.location.latitude},${selectedPlace.location.longitude}`;
+      await incrementApiUsage('directions');
+      // Get origin coordinates
+      let originLat, originLng;
+      if (!currentStart || currentStart.id === 'your_location') {
+        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        userLocationRef.current = loc.coords;
+        originLat = loc.coords.latitude;
+        originLng = loc.coords.longitude;
+      } else {
+        originLat = currentStart.location.latitude;
+        originLng = currentStart.location.longitude;
+      }
+      const origin = `${originLat},${originLng}`;
+      const dest = `${currentDest.location.latitude},${currentDest.location.longitude}`;
 
       const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${dest}&alternatives=true&key=${GOOGLE_PLACES_API_KEY}`;
       const response = await fetch(url);
@@ -525,6 +724,7 @@ function HomeScreen() {
             summary: route.summary,
             distance: leg.distance.text,
             duration: leg.duration.text,
+            durationValue: leg.duration.value,
             steps: leg.steps.map((step) => ({
               instruction: stripHtml(step.html_instructions),
               distance: step.distance.text,
@@ -552,6 +752,8 @@ function HomeScreen() {
         }
         return parsedRoutes;
       } else {
+        setRoutes([]);
+        setShowRoutes(false);
         Alert.alert('No Routes', data.status === 'ZERO_RESULTS'
           ? 'No driving routes found to this destination.'
           : `Directions API error: ${data.status}`);
@@ -592,8 +794,37 @@ function HomeScreen() {
       setSelectedRouteIndex(0);
     }
 
-    // Tilt map immediately using last known location (avoids blocking delay)
-    if (userLocationRef.current) {
+    // Check if we need to start in Preview Mode
+    let preview = false;
+    let initialStartPoint = null;
+    if (userLocationRef.current && currentRoutes.length > 0) {
+      initialStartPoint = currentRoutes[0].points[0];
+      if (initialStartPoint) {
+        const dist = Math.sqrt(
+          Math.pow(userLocationRef.current.latitude - initialStartPoint.latitude, 2) +
+          Math.pow(userLocationRef.current.longitude - initialStartPoint.longitude, 2)
+        );
+        if (dist > 0.002) { // roughly over 200m away
+          preview = true;
+        }
+      }
+    }
+    setIsPreviewMode(preview);
+    setIsFollowingUser(!preview);
+
+    // Tilt camera immediately
+    if (preview && currentRoutes.length > 0 && currentRoutes[0].steps.length > 0) {
+      const firstStepLoc = currentRoutes[0].steps[0].startLocation;
+      mapRef.current?.animateCamera(
+        {
+          center: { latitude: firstStepLoc.lat, longitude: firstStepLoc.lng },
+          pitch: 60,
+          heading: 0,
+          zoom: 17,
+        },
+        { duration: 1000 }
+      );
+    } else if (userLocationRef.current) {
       const { latitude, longitude, heading } = userLocationRef.current;
       mapRef.current?.animateCamera(
         {
@@ -630,16 +861,18 @@ function HomeScreen() {
           userLocationRef.current = loc.coords;
           const { latitude, longitude } = loc.coords;
 
-          // Update camera to follow user with tilt
-          mapRef.current?.animateCamera(
-            {
-              center: { latitude, longitude },
-              pitch: 60,
-              heading: loc.coords.heading || 0,
-              zoom: 17,
-            },
-            { duration: 500 }
-          );
+          // Update camera to follow user with tilt, but only if they haven't panned away
+          if (isFollowingUser) {
+            mapRef.current?.animateCamera(
+              {
+                center: { latitude, longitude },
+                pitch: 60,
+                heading: loc.coords.heading || 0,
+                zoom: 17,
+              },
+              { duration: 500 }
+            );
+          }
 
           // Find nearest upcoming step
           const steps = selectedRoute.steps;
@@ -675,8 +908,16 @@ function HomeScreen() {
     setDetailsExitAnim(SlideOutDown.duration(400));
     setIsNavigating(false);
     setShowRoutes(false);
+    setIsRoutingMode(false);
+    setIsPreviewMode(false);
+    setIsFollowingUser(true);
     setRoutes([]);
     setCurrentStepIndex(0);
+
+    if (!searchQuery.trim() && !startSearchQuery.trim()) {
+      setSearchBarFocused(false);
+      progress.value = withTiming(0, { duration: 300 });
+    }
 
     // Reset camera to normal top-down view
     if (userLocationRef.current) {
@@ -702,6 +943,7 @@ function HomeScreen() {
   const searchBarStyle = useAnimatedStyle(() => {
     return {
       width: interpolate(progress.value, [0, 1], [50, screenWidth - 140]),
+      height: withTiming(isRoutingMode ? 108 : 50, { duration: 300 }),
     };
   });
 
@@ -778,6 +1020,14 @@ function HomeScreen() {
     return unsubscribe;
   }, [navigation]);
 
+  // Get ETA
+  const getEtaString = () => {
+    if (!routes[selectedRouteIndex]) return '';
+    const durationSeconds = routes[selectedRouteIndex].durationValue || 0;
+    const arrivalDate = new Date(Date.now() + durationSeconds * 1000);
+    return arrivalDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
+  };
+
   return (
     <View style={styles.fullscreen}>
       <MapView
@@ -792,8 +1042,11 @@ function HomeScreen() {
         onPress={handleMapPress}
         onPoiClick={handlePoiClick}
         initialRegion={initialRegion || undefined}
-        onRegionChangeComplete={(region) => {
+        onRegionChangeComplete={(region, details) => {
           setZoomLevel(region.longitudeDelta);
+          if (isNavigating && details && details.isGesture) {
+            setIsFollowingUser(false);
+          }
         }}
       >
         {clusteredPotholes.map((pothole, index) => (
@@ -811,6 +1064,17 @@ function HomeScreen() {
             title={selectedPlace.displayName?.text}
             description={selectedPlace.formattedAddress}
             pinColor={colorTheme}
+          />
+        )}
+        {isRoutingMode && startPlace && startPlace.id !== 'your_location' && startPlace.location && (
+          <Marker
+            coordinate={{
+              latitude: startPlace.location.latitude,
+              longitude: startPlace.location.longitude,
+            }}
+            title={startPlace.displayName?.text}
+            description={startPlace.formattedAddress}
+            pinColor="green"
           />
         )}
         {/* Route polylines – render with outline for contrast */}
@@ -834,7 +1098,7 @@ function HomeScreen() {
         {(showRoutes || isNavigating) && routes.map((route, idx) => {
           const isSelected = idx === selectedRouteIndex;
           if (isNavigating && !isSelected) return null;
-          
+
           const strokeColor = isSelected ? colorTheme : '#BDBDBD';
           return (
             <Polyline
@@ -855,9 +1119,9 @@ function HomeScreen() {
 
       {/* Navigation Instruction Card (top, during driving mode) */}
       {isNavigating && routes[selectedRouteIndex] && (
-        <Animated.View 
-          entering={SlideInUp.duration(400)} 
-          exiting={SlideOutUp.duration(400)} 
+        <Animated.View
+          entering={SlideInUp.duration(400)}
+          exiting={SlideOutUp.duration(400)}
           style={[styles.navInstructionCard, { backgroundColor: colorTheme }]}
         >
           <View style={styles.navInstructionRow}>
@@ -866,16 +1130,42 @@ function HomeScreen() {
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.navInstructionText} numberOfLines={2}>
-                {routes[selectedRouteIndex].steps[currentStepIndex]?.instruction || 'Proceed to route'}
+                {isPreviewMode ? 'Route preview' : (routes[selectedRouteIndex].steps[currentStepIndex]?.instruction || 'Proceed to route')}
               </Text>
               <Text style={styles.navInstructionSub}>
-                {routes[selectedRouteIndex].steps[currentStepIndex]?.distance || ''}
-                {' · '}
-                {routes[selectedRouteIndex].steps[currentStepIndex]?.duration || ''}
+                {routes[selectedRouteIndex].steps[currentStepIndex]?.instruction || ''}
               </Text>
             </View>
           </View>
-          <View style={styles.navStepProgress}>
+          <View style={[styles.navStepProgress, isPreviewMode && { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}>
+            {isPreviewMode && (
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <Pressable
+                  disabled={currentStepIndex === 0}
+                  onPress={() => {
+                    const nextIdx = Math.max(0, currentStepIndex - 1);
+                    setCurrentStepIndex(nextIdx);
+                    const stLoc = routes[selectedRouteIndex].steps[nextIdx].startLocation;
+                    mapRef.current?.animateCamera({ center: { latitude: stLoc.lat, longitude: stLoc.lng }, pitch: 60, zoom: 17, heading: 0 }, { duration: 600 });
+                  }}
+                  style={{ backgroundColor: 'rgba(255,255,255,0.2)', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12 }}
+                >
+                  <Text style={{ color: currentStepIndex === 0 ? 'rgba(255,255,255,0.4)' : 'white', fontWeight: 'bold' }}>Prev</Text>
+                </Pressable>
+                <Pressable
+                  disabled={currentStepIndex >= routes[selectedRouteIndex].steps.length - 1}
+                  onPress={() => {
+                    const nextIdx = Math.min(routes[selectedRouteIndex].steps.length - 1, currentStepIndex + 1);
+                    setCurrentStepIndex(nextIdx);
+                    const stLoc = routes[selectedRouteIndex].steps[nextIdx].startLocation;
+                    mapRef.current?.animateCamera({ center: { latitude: stLoc.lat, longitude: stLoc.lng }, pitch: 60, zoom: 17, heading: 0 }, { duration: 600 });
+                  }}
+                  style={{ backgroundColor: 'rgba(255,255,255,0.2)', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12 }}
+                >
+                  <Text style={{ color: currentStepIndex >= routes[selectedRouteIndex].steps.length - 1 ? 'rgba(255,255,255,0.4)' : 'white', fontWeight: 'bold' }}>Next</Text>
+                </Pressable>
+              </View>
+            )}
             <Text style={styles.navStepProgressText}>
               Step {currentStepIndex + 1} of {routes[selectedRouteIndex].steps.length}
             </Text>
@@ -901,45 +1191,119 @@ function HomeScreen() {
                   <Animated.View style={[styles.iconWrapper, iconStyle]}>
                     <FontAwesome name="search" size={20} color={themeColors.text} />
                   </Animated.View>
-                  <Animated.View style={[styles.inputWrapper, inputStyle]}>
-                    <TextInput
-                      placeholder="Search TravelSense..."
-                      placeholderTextColor={themeColors.textSecondary}
-                      style={[styles.input, { color: themeColors.text, paddingRight: 40 }]}
-                      ref={inputRef}
-                      readOnly={isSearchBarFocused}
-                      value={searchQuery}
-                      onChangeText={setSearchQuery}
-                      onSubmitEditing={() => searchPlaces(searchQuery)}
-                      returnKeyType="search"
-                    />
-                    <View style={styles.searchRightIcons}>
-                      {isSearching ? (
-                        <ActivityIndicator size="small" color={colorTheme} style={{ marginRight: 8 }} />
-                      ) : (
-                        searchQuery.length > 0 && (
-                          <Pressable onPress={clearSearch} style={{ padding: 8 }}>
-                            <MaterialIcons name="close" size={20} color={themeColors.textSecondary} />
-                          </Pressable>
-                        )
-                      )}
+                  <Animated.View style={[styles.inputWrapper, inputStyle, isRoutingMode && { flexDirection: 'column', paddingVertical: 8, gap: 8 }]}>
+                    {isRoutingMode && (
+                      <Animated.View entering={SlideInDown.duration(300)} exiting={SlideOutUp.duration(300)} style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <TextInput
+                          ref={startInputRef}
+                          placeholder="Starting location..."
+                          placeholderTextColor={themeColors.textSecondary}
+                          style={[styles.input, { color: themeColors.text, paddingRight: 40, height: 42, elevation: 0 }]}
+                          value={startSearchQuery}
+                          onFocus={() => {
+                            setActiveSearchField('start');
+                            setTimeout(() => {
+                              startInputRef.current?.setSelection(startSearchQuery.length, startSearchQuery.length);
+                            }, 50);
+                          }}
+                          onBlur={() => {
+                            startInputRef.current?.setSelection(0, 0);
+                            if (!startSearchQuery.trim()) {
+                              setStartSearchQuery(startPlace ? (startPlace.displayName?.text || 'Your location') : 'Your location');
+                            }
+                          }}
+                          onChangeText={setStartSearchQuery}
+                          onSubmitEditing={() => searchPlaces(startSearchQuery, 'start')}
+                          returnKeyType="search"
+                        />
+                        <View style={[styles.searchRightIcons, { height: 42 }]}>
+                          {isSearching && activeSearchField === 'start' ? (
+                            <ActivityIndicator size="small" color={colorTheme} style={{ marginRight: 8 }} />
+                          ) : (
+                            startSearchQuery.length > 0 ? (
+                              <Pressable onPress={() => { setStartSearchQuery(''); setStartPlace(null); }} style={{ padding: 8 }}>
+                                <MaterialIcons name="close" size={20} color={themeColors.textSecondary} />
+                              </Pressable>
+                            ) : (
+                              <Pressable
+                                onPress={() => {
+                                  const defaultStart = {
+                                    id: 'your_location',
+                                    displayName: { text: 'Your location' },
+                                    formattedAddress: 'Current location',
+                                    location: null
+                                  };
+                                  setStartSearchQuery('Your location');
+                                  setStartPlace(defaultStart);
+                                  if (selectedPlace) {
+                                    fetchDirections(false, defaultStart, selectedPlace);
+                                  }
+                                }}
+                                style={{ padding: 8 }}
+                              >
+                                <MaterialIcons name="my-location" size={20} color={colorTheme} />
+                              </Pressable>
+                            )
+                          )}
+                        </View>
+                      </Animated.View>
+                    )}
+
+                    {isRoutingMode && (
+                      <View style={{ height: 1, backgroundColor: themeColors.border, marginHorizontal: -10, opacity: 0.5 }} />
+                    )}
+
+                    <View style={{ flexDirection: 'row', alignItems: 'center', flex: isRoutingMode ? 0 : 1 }}>
+                      <TextInput
+                        placeholder={isRoutingMode ? "Destination location..." : "Search TravelSense..."}
+                        placeholderTextColor={themeColors.textSecondary}
+                        style={[styles.input, { color: themeColors.text, paddingRight: 40, height: isRoutingMode ? 42 : 50, elevation: isRoutingMode ? 0 : 0 }]}
+                        ref={destInputRef}
+                        readOnly={isSearchBarFocused}
+                        onFocus={() => {
+                          setActiveSearchField('dest');
+                          setTimeout(() => {
+                            destInputRef.current?.setSelection(searchQuery.length, searchQuery.length);
+                          }, 50);
+                        }}
+                        onBlur={() => {
+                          destInputRef.current?.setSelection(0, 0);
+                        }}
+                        value={searchQuery}
+                        onChangeText={setSearchQuery}
+                        onSubmitEditing={() => searchPlaces(searchQuery, 'dest')}
+                        returnKeyType="search"
+                      />
+                      <View style={[styles.searchRightIcons, { height: isRoutingMode ? 42 : 50 }]}>
+                        {isSearching && activeSearchField === 'dest' ? (
+                          <ActivityIndicator size="small" color={colorTheme} style={{ marginRight: 8 }} />
+                        ) : (
+                          searchQuery.length > 0 && (
+                            <Pressable onPress={() => setSearchQuery('')} style={{ padding: 8 }}>
+                              <MaterialIcons name="close" size={20} color={themeColors.textSecondary} />
+                            </Pressable>
+                          )
+                        )}
+                      </View>
                     </View>
                   </Animated.View>
                 </Animated.View>
               </Pressable>
             </View>
 
-            <ButtonRound onPress={() => {
-              if (userLocationRef.current) {
+            <ButtonRound onPress={async () => {
+              try {
+                const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+                const coords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
+                userLocationRef.current = coords;
                 mapRef.current?.animateCamera({
-                  center: {
-                    latitude: userLocationRef.current.latitude,
-                    longitude: userLocationRef.current.longitude,
-                  },
+                  center: coords,
                   zoom: 15,
                   pitch: 0,
                   heading: 0,
                 }, { duration: 1000 });
+              } catch (e) {
+                console.warn('GPS center error:', e);
               }
             }} style={{ backgroundColor: themeColors.card }}>
               <MaterialIcons name="my-location" size={24} color={colorTheme} />
@@ -986,11 +1350,11 @@ function HomeScreen() {
         )}
 
         {/* Place Details Card (bottom, when place selected) */}
-        {selectedPlace && !showRoutes && !isNavigating && (
-          <Animated.View 
+        {selectedPlace && !isRoutingMode && !showRoutes && !isNavigating && !isKeyboardVisible && searchResults.length === 0 && (
+          <Animated.View
             key={`details-${selectedPlace.id}`}
-            entering={detailsEnterAnim} 
-            exiting={detailsExitAnim} 
+            entering={detailsEnterAnim}
+            exiting={searchResults.length > 0 ? SlideOutDown.duration(400) : detailsExitAnim}
             style={[styles.detailsCard, { backgroundColor: themeColors.card }]}
           >
             {/* Header + Close */}
@@ -1003,7 +1367,12 @@ function HomeScreen() {
                   {selectedPlace.formattedAddress}
                 </Text>
               </View>
-              <Pressable onPress={clearSearch} style={{ padding: 4, marginTop: -4, marginRight: -4 }}>
+              <Pressable 
+                onPress={() => {
+                  clearSearch();
+                }} 
+                style={{ padding: 4, marginTop: -4, marginRight: -4 }}
+              >
                 <MaterialIcons name="close" size={24} color={themeColors.textSecondary} />
               </Pressable>
             </View>
@@ -1055,8 +1424,7 @@ function HomeScreen() {
                   },
                 ]}
                 onPress={() => {
-                  setDetailsExitAnim(SlideOutLeft.duration(400));
-                  fetchDirections();
+                  startNavigationMode();
                 }}
                 disabled={isFetchingRoutes}
               >
@@ -1081,7 +1449,7 @@ function HomeScreen() {
                     borderColor: colorTheme,
                   },
                 ]}
-                onPress={startNavigation}
+                onPress={startNavigationMode}
               >
                 <MaterialIcons name="navigation" size={22} color="white" />
                 <Text style={[styles.routeOptionDuration, { color: 'white', fontSize: 16 }]}>Start</Text>
@@ -1094,11 +1462,11 @@ function HomeScreen() {
       </View>
 
       {/* Route Info Panel (bottom, during directions mode) */}
-      {showRoutes && !isNavigating && routes.length > 0 && (
-        <Animated.View 
+      {showRoutes && !isNavigating && routes.length > 0 && !isKeyboardVisible && searchResults.length === 0 && (
+        <Animated.View
           key="route-panel"
-          entering={SlideInRight.duration(400)} 
-          exiting={SlideOutRight.duration(400)} 
+          entering={SlideInDown.duration(400)}
+          exiting={searchResults.length > 0 ? SlideOutDown.duration(400) : SlideOutRight.duration(400)}
           style={[styles.routePanel, { backgroundColor: themeColors.card }]}
         >
           <View style={styles.routePanelHeader}>
@@ -1141,35 +1509,67 @@ function HomeScreen() {
             ))}
           </ScrollView>
 
-          <Pressable 
-            style={[styles.startNavButton, { backgroundColor: colorTheme }]} 
+          <Pressable
+            style={[styles.startNavButton, { backgroundColor: colorTheme }]}
             onPress={() => {
               setDetailsExitAnim(SlideOutDown.duration(400));
               startNavigation();
             }}
           >
             <MaterialIcons name="navigation" size={20} color="white" />
-            <Text style={styles.startNavButtonText}>Start Navigation</Text>
+            <Text style={styles.startNavButtonText}>
+              {(() => {
+                if (userLocationRef.current && routes[selectedRouteIndex]) {
+                  const startPoint = routes[selectedRouteIndex].points[0];
+                  if (startPoint) {
+                    const dist = Math.sqrt(
+                      Math.pow(userLocationRef.current.latitude - startPoint.latitude, 2) +
+                      Math.pow(userLocationRef.current.longitude - startPoint.longitude, 2)
+                    );
+                    if (dist > 0.002) return 'Preview Route';
+                  }
+                }
+                return 'Start Navigation';
+              })()}
+            </Text>
           </Pressable>
         </Animated.View>
       )}
 
       {/* Exit button during navigation mode */}
       {isNavigating && (
-        <Animated.View 
-          entering={SlideInDown.duration(400)} 
-          exiting={SlideOutDown.duration(400)} 
+        <Animated.View
+          entering={SlideInDown.duration(400)}
+          exiting={SlideOutDown.duration(400)}
           style={styles.navExitContainer}
         >
           <View style={[styles.navEtaBar, { backgroundColor: themeColors.card }]}>
             <View>
               <Text style={[styles.navEtaDuration, { color: themeColors.text }]}>{routes[selectedRouteIndex]?.duration || ''}</Text>
-              <Text style={[styles.navEtaDistance, { color: themeColors.textSecondary }]}>{routes[selectedRouteIndex]?.distance || ''}</Text>
+              <Text style={[styles.navEtaDistance, { color: themeColors.textSecondary }]}>{routes[selectedRouteIndex]?.distance || ''} • ETA {getEtaString()}</Text>
             </View>
-            <Pressable style={styles.navExitButton} onPress={exitNavigation}>
-              <MaterialIcons name="close" size={20} color="white" />
-              <Text style={styles.navExitText}>Exit</Text>
-            </Pressable>
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              {!isFollowingUser && (
+                <Pressable
+                  style={[styles.navExitButton, { backgroundColor: '#4285F4', paddingHorizontal: 12 }]}
+                  onPress={() => {
+                    setIsFollowingUser(true);
+                    if (userLocationRef.current) {
+                      mapRef.current?.animateCamera({
+                        center: { latitude: userLocationRef.current.latitude, longitude: userLocationRef.current.longitude },
+                        pitch: 60, heading: userLocationRef.current.heading || 0, zoom: 17
+                      }, { duration: 800 });
+                    }
+                  }}
+                >
+                  <MaterialIcons name="my-location" size={20} color="white" />
+                </Pressable>
+              )}
+              <Pressable style={styles.navExitButton} onPress={exitNavigation}>
+                <MaterialIcons name="close" size={20} color="white" />
+                <Text style={styles.navExitText}>Exit</Text>
+              </Pressable>
+            </View>
           </View>
         </Animated.View>
       )}
@@ -1414,6 +1814,10 @@ function SettingsScreen() {
     toggleStorageIntegration,
     batteryThreshold,
     setBatteryThreshold,
+    apiLimits,
+    updateApiLimit,
+    apiUsage,
+    lifetimeUsage
   } = useSettings();
 
   const insets = useSafeAreaInsets();
@@ -1526,6 +1930,79 @@ function SettingsScreen() {
                 onPress={() => setColorTheme(c)}
               />
             ))}
+          </View>
+        </View>
+
+        <Text style={[styles.sectionTitle, { color: themeColors.textSecondary }]}>API LIMITS</Text>
+        <View style={[styles.settingsCard, { backgroundColor: themeColors.card, borderColor: themeColors.border, padding: 15 }]}>
+          <View style={{ marginBottom: 20 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+              <Text style={[styles.settingTitle, { color: themeColors.text }]}>Places API Limit: {apiLimits.places}</Text>
+              <Text style={{ color: themeColors.textSecondary, fontSize: 11 }}>Lifetime: {lifetimeUsage.places || 0}</Text>
+            </View>
+            <Slider
+              style={{ width: '100%', height: 40 }}
+              minimumValue={0}
+              maximumValue={250}
+              step={10}
+              value={apiLimits.places}
+              onValueChange={(val) => updateApiLimit('places', val)}
+              minimumTrackTintColor={colorTheme}
+              maximumTrackTintColor={themeColors.border}
+              thumbTintColor={colorTheme}
+            />
+            <Progress.Bar progress={Math.min((apiUsage.places?.count || 0) / (apiLimits.places || 1), 1)} width={null} color={colorTheme} unfilledColor={themeColors.background} borderRadius={4} borderWidth={0} height={8} />
+            <Text style={{ color: themeColors.textSecondary, fontSize: 12, marginTop: 5 }}>{apiUsage.places?.count || 0} / {apiLimits.places} used today</Text>
+          </View>
+
+          <View style={{ marginBottom: 20 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+              <Text style={[styles.settingTitle, { color: themeColors.text }]}>Directions API Limit: {apiLimits.directions}</Text>
+              <Text style={{ color: themeColors.textSecondary, fontSize: 11 }}>Lifetime: {lifetimeUsage.directions || 0}</Text>
+            </View>
+            <Slider
+              style={{ width: '100%', height: 40 }}
+              minimumValue={0}
+              maximumValue={250}
+              step={10}
+              value={apiLimits.directions}
+              onValueChange={(val) => updateApiLimit('directions', val)}
+              minimumTrackTintColor={colorTheme}
+              maximumTrackTintColor={themeColors.border}
+              thumbTintColor={colorTheme}
+            />
+            <Progress.Bar progress={Math.min((apiUsage.directions?.count || 0) / (apiLimits.directions || 1), 1)} width={null} color={colorTheme} unfilledColor={themeColors.background} borderRadius={4} borderWidth={0} height={8} />
+            <Text style={{ color: themeColors.textSecondary, fontSize: 12, marginTop: 5 }}>{apiUsage.directions?.count || 0} / {apiLimits.directions} used today</Text>
+          </View>
+
+          <View style={{ marginBottom: 15 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+              <Text style={[styles.settingTitle, { color: themeColors.text }]}>Geocoding API Limit: {apiLimits.geocode}</Text>
+              <Text style={{ color: themeColors.textSecondary, fontSize: 11 }}>Lifetime: {lifetimeUsage.geocode || 0}</Text>
+            </View>
+            <Slider
+              style={{ width: '100%', height: 40 }}
+              minimumValue={0}
+              maximumValue={250}
+              step={10}
+              value={apiLimits.geocode}
+              onValueChange={(val) => updateApiLimit('geocode', val)}
+              minimumTrackTintColor={colorTheme}
+              maximumTrackTintColor={themeColors.border}
+              thumbTintColor={colorTheme}
+            />
+            <Progress.Bar progress={Math.min((apiUsage.geocode?.count || 0) / (apiLimits.geocode || 1), 1)} width={null} color={colorTheme} unfilledColor={themeColors.background} borderRadius={4} borderWidth={0} height={8} />
+            <Text style={{ color: themeColors.textSecondary, fontSize: 12, marginTop: 5 }}>{apiUsage.geocode?.count || 0} / {apiLimits.geocode} used today</Text>
+          </View>
+
+          <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: themeColors.border, paddingTop: 15 }]}>
+            <View>
+              <Text style={[styles.settingTitle, { color: themeColors.text }]}>Total Lifetime Requests</Text>
+              <Text style={[styles.settingDesc, { color: themeColors.textSecondary }]}>Sum of all tracked APIs</Text>
+            </View>
+            <Text style={{ color: colorTheme, fontWeight: 'bold', fontSize: 18 }}>
+              {Object.values(lifetimeUsage).reduce((acc, curr) => acc + (typeof curr === 'number' ? curr : 0), 0)}
+            </Text>
           </View>
         </View>
       </View>
@@ -2094,17 +2571,15 @@ const styles = StyleSheet.create({
     padding: 10,
     marginHorizontal: 0,
     borderWidth: 0,
-    elevation: 5,
     textAlignVertical: "center",
   },
   searchContainer: {
-    height: 50,
     backgroundColor: "white",
     justifyContent: "center",
     paddingHorizontal: 10,
     borderRadius: 25,
     overflow: "hidden",
-    elevation: 5,
+    elevation: 10,
   },
   iconWrapper: {
     position: "absolute",
@@ -2312,6 +2787,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
+  // Bottom Sheet layout info
   // Route panel (bottom card during directions mode)
   routePanel: {
     position: 'absolute',
