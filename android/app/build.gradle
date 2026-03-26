@@ -179,4 +179,8 @@ dependencies {
     } else {
         implementation jscFlavor
     }
+
+    // 7zip compression for hourly sensor data archival
+    implementation 'org.apache.commons:commons-compress:1.26.1'
+    implementation 'org.tukaani:xz:1.9'
 }

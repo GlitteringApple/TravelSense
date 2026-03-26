@@ -85,6 +85,46 @@ class TravelSenseDocumentsProvider : DocumentsProvider() {
         return ParcelFileDescriptor.open(file, accessMode)
     }
 
+    override fun deleteDocument(documentId: String?) {
+        val file = getFileForDocId(documentId ?: "")
+        if (!file.delete()) {
+            throw FileNotFoundException("Failed to delete $documentId")
+        }
+    }
+
+    override fun createDocument(
+        parentDocumentId: String?,
+        mimeType: String?,
+        displayName: String?
+    ): String {
+        val parent = getFileForDocId(parentDocumentId ?: DEFAULT_DOCUMENT_ID)
+        val file = File(parent, displayName ?: "new_file")
+        if (mimeType == DocumentsContract.Document.MIME_TYPE_DIR) {
+            if (!file.mkdir()) {
+                throw FileNotFoundException("Failed to create directory $displayName")
+            }
+        } else {
+            if (!file.createNewFile()) {
+                throw FileNotFoundException("Failed to create file $displayName")
+            }
+        }
+        val baseDir = context?.filesDir ?: throw FileNotFoundException("Files dir not found")
+        val relativePath = file.absolutePath.removePrefix(baseDir.absolutePath).removePrefix("/")
+        return "file_$relativePath"
+    }
+
+    override fun renameDocument(documentId: String?, displayName: String?): String {
+        val file = getFileForDocId(documentId ?: "")
+        val parent = file.parentFile
+        val newFile = File(parent, displayName ?: "")
+        if (!file.renameTo(newFile)) {
+            throw FileNotFoundException("Failed to rename $documentId to $displayName")
+        }
+        val baseDir = context?.filesDir ?: throw FileNotFoundException("Files dir not found")
+        val relativePath = newFile.absolutePath.removePrefix(baseDir.absolutePath).removePrefix("/")
+        return "file_$relativePath"
+    }
+
     private fun getFileForDocId(documentId: String): File {
         val baseDir = context?.filesDir ?: throw FileNotFoundException("Files dir not found")
         if (documentId == DEFAULT_DOCUMENT_ID || documentId == DEFAULT_ROOT_ID) {
@@ -106,13 +146,20 @@ class TravelSenseDocumentsProvider : DocumentsProvider() {
             else -> "application/octet-stream"
         }
 
+        var flags = DocumentsContract.Document.FLAG_SUPPORTS_DELETE or DocumentsContract.Document.FLAG_SUPPORTS_RENAME
+        if (file.isDirectory) {
+            flags = flags or DocumentsContract.Document.FLAG_DIR_SUPPORTS_CREATE
+        } else {
+            flags = flags or DocumentsContract.Document.FLAG_SUPPORTS_WRITE
+        }
+
         cursor.newRow().apply {
             add(DocumentsContract.Document.COLUMN_DOCUMENT_ID, docId)
             add(DocumentsContract.Document.COLUMN_DISPLAY_NAME, file.name)
             add(DocumentsContract.Document.COLUMN_SIZE, file.length())
             add(DocumentsContract.Document.COLUMN_MIME_TYPE, mimeType)
             add(DocumentsContract.Document.COLUMN_LAST_MODIFIED, file.lastModified())
-            add(DocumentsContract.Document.COLUMN_FLAGS, DocumentsContract.Document.FLAG_SUPPORTS_DELETE or DocumentsContract.Document.FLAG_SUPPORTS_WRITE)
+            add(DocumentsContract.Document.COLUMN_FLAGS, flags)
         }
     }
 }

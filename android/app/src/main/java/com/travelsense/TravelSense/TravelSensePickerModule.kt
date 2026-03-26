@@ -20,7 +20,7 @@ class TravelSensePickerModule(reactContext: ReactApplicationContext) : ReactCont
         val rootUri = Uri.parse("content://com.travelsense.TravelSense.documents/root/travelsense_root")
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(rootUri, "vnd.android.document/root")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
         }
 
         try {

@@ -30,6 +30,9 @@ import java.text.SimpleDateFormat
 import java.util.*
 import org.json.JSONArray
 import org.json.JSONObject
+import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile
+import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry
+import org.apache.commons.compress.archivers.sevenz.SevenZFile
 
 class TravelSenseService : Service(), SensorEventListener {
     private val CHANNEL_ID = "TravelSenseChannel"
@@ -66,6 +69,8 @@ class TravelSenseService : Service(), SensorEventListener {
     private val DATA_FILE_NAME = "ArchivedData/sensor_data.json"
     private var lastWriteTime = 0L
     private val GRAVITY_SEC = 9.80665f
+    private var lastHourlyCompressHour = -1  // Track last compressed hour (-1 = not yet set)
+    private var lastActiveFileName = ""
 
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
@@ -129,6 +134,9 @@ class TravelSenseService : Service(), SensorEventListener {
                 if (currentRealTime - lastWriteTime > 5000) {
                     flushBufferToDisk()
                 }
+                
+                // Hourly compression check
+                checkAndCompressHourlyData()
             } else {
                 startTimeMillis = System.currentTimeMillis() - (elapsedTime * 1000L)
             }
@@ -144,7 +152,10 @@ class TravelSenseService : Service(), SensorEventListener {
             gravityZ = alpha * lastAccel[2] + (1 - alpha) * gravityZ
 
             val point = JSONObject().apply {
-                put("timestamp", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).format(Date()))
+                // Save JSON timestamp in true UTC format
+                put("timestamp", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+                    timeZone = TimeZone.getTimeZone("UTC")
+                }.format(Date()))
                 put("gps_latitude", if (lastLat != 0.0) lastLat else null)
                 put("gps_longitude", if (lastLng != 0.0) lastLng else null)
                 put("accelerometer_x", (lastAccel[0] - gravityX) / GRAVITY_SEC)
@@ -184,8 +195,16 @@ class TravelSenseService : Service(), SensorEventListener {
                     timeZone = TimeZone.getTimeZone("UTC")
                 }
                 val firstDate = isoFormat.parse(tsString) ?: Date()
-                val sdf = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.getDefault())
-                val timestampStr = sdf.format(firstDate)
+                // Round down to nearest 5-minute boundary
+                val cal = Calendar.getInstance().apply { time = firstDate }
+                val minute = cal.get(Calendar.MINUTE)
+                cal.set(Calendar.MINUTE, minute - (minute % 5))
+                cal.set(Calendar.SECOND, 0)
+                cal.set(Calendar.MILLISECOND, 0)
+                val windowDate = cal.time
+                
+                val sdf = SimpleDateFormat("yyyy-MM-dd_HH-mm-00", Locale.getDefault())
+                val timestampStr = sdf.format(windowDate)
                 
                 // If it's not time to rotate and not forced, just keep in memory
                 if (!force && lastWriteTime != 0L) {
@@ -206,6 +225,16 @@ class TravelSenseService : Service(), SensorEventListener {
                 
                 val fileName = "${timestampStr}_${deviceId}.json"
                 val dataFile = File(fileDir, fileName)
+                
+                // Overwrite overlapping data if we just switched to this 5-minute bucket
+                // (This happens on time jumps backward or service restart overlapping a window)
+                if (fileName != lastActiveFileName) {
+                    if (dataFile.exists()) {
+                        dataFile.delete()
+                        Log.d("TravelSenseService", "Overwriting overlapping 5-minute window: $fileName")
+                    }
+                    lastActiveFileName = fileName
+                }
                 
                 // Read existing data robustly
                 val existingData = try {
@@ -241,6 +270,228 @@ class TravelSenseService : Service(), SensorEventListener {
             } catch (e: Exception) {
                 Log.e("TravelSenseService", "Critical error in flushBuffer: ${e.message}")
             }
+        }
+    }
+
+    private fun checkAndCompressHourlyData() {
+        val cal = Calendar.getInstance()
+        val currentHour = cal.get(Calendar.HOUR_OF_DAY)
+        
+        // Initialize on first run
+        if (lastHourlyCompressHour == -1) {
+            lastHourlyCompressHour = currentHour
+            return
+        }
+        
+        // When the hour changes, compress the previous hour's data
+        if (currentHour != lastHourlyCompressHour) {
+            val prevHour = lastHourlyCompressHour
+            lastHourlyCompressHour = currentHour
+            
+            // Force flush current buffer to disk first so nothing is lost
+            flushBufferToDisk(force = true)
+            
+            // Determine the correct date folder for the previous hour
+            val prevCal = Calendar.getInstance().apply {
+                add(Calendar.HOUR_OF_DAY, -1)
+            }
+            val dateFolderFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+            val dateFolder = dateFolderFormat.format(prevCal.time)
+            val dayDir = File(File(filesDir, "ArchivedData"), dateFolder)
+            
+            // Run compression on the background thread to avoid blocking
+            serviceHandler.post {
+                compressHourData(dayDir, prevHour, dateFolder)
+            }
+        }
+    }
+
+    /**
+     * On startup, scan ALL date folders in ArchivedData for any JSON files
+     * from completed hours that were never compressed (e.g., the app was closed
+     * mid-session). Compresses each completed hour, skipping the current hour.
+     */
+    private fun compressOlderUncompressedData() {
+        try {
+            val archiveRoot = File(filesDir, "ArchivedData")
+            if (!archiveRoot.exists() || !archiveRoot.isDirectory) return
+            
+            val isoFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
+            val currentCal = Calendar.getInstance()
+            val currentHour = currentCal.get(Calendar.HOUR_OF_DAY)
+            val dateFolderFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+            val todayStr = dateFolderFormat.format(currentCal.time)
+            
+            val dateFolders = archiveRoot.listFiles { f -> f.isDirectory } ?: return
+            
+            for (dayDir in dateFolders) {
+                val jsonFiles = dayDir.listFiles { f -> f.extension == "json" } ?: continue
+                if (jsonFiles.isEmpty()) continue
+                
+                val isToday = dayDir.name == todayStr
+                
+                // Group JSON files by hour based on their first timestamp
+                val hourGroups = mutableMapOf<Int, MutableList<File>>()
+                
+                for (jsonFile in jsonFiles) {
+                    try {
+                        val content = jsonFile.readText().trim()
+                        if (content.isEmpty() || !content.startsWith("[")) continue
+                        
+                        val dataArray = JSONArray(content)
+                        if (dataArray.length() == 0) continue
+                        
+                        val firstTs = dataArray.getJSONObject(0).getString("timestamp")
+                        val firstDate = isoFormat.parse(firstTs) ?: continue
+                        val fileCal = Calendar.getInstance()
+                        fileCal.time = firstDate
+                        val fileHour = fileCal.get(Calendar.HOUR_OF_DAY)
+                        
+                        hourGroups.getOrPut(fileHour) { mutableListOf() }.add(jsonFile)
+                    } catch (e: Exception) {
+                        Log.w("TravelSenseService", "Startup scan: skipping ${jsonFile.name}: ${e.message}")
+                    }
+                }
+                
+                // Compress each completed hour group
+                for ((hour, files) in hourGroups) {
+                    // Skip the current hour of today — it's still being recorded
+                    if (isToday && hour == currentHour) continue
+                    
+                    compressHourData(dayDir, hour, dayDir.name)
+                }
+            }
+            
+            Log.d("TravelSenseService", "Startup compression scan complete")
+        } catch (e: Exception) {
+            Log.e("TravelSenseService", "Error in startup compression scan: ${e.message}")
+        }
+    }
+
+    /**
+     * Compress all JSON files for a specific hour within a specific date folder
+     * into a single .7z archive with an hour-rounded filename.
+     * e.g., hour 9 in folder 2026-03-24 -> 2026-03-24_09-00-00.7z
+     */
+    private fun compressHourData(dayDir: File, hour: Int, dateStr: String) {
+        try {
+            if (!dayDir.exists() || !dayDir.isDirectory) return
+            
+            val isoFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
+            
+            val jsonFiles = dayDir.listFiles { f -> f.extension == "json" } ?: return
+            if (jsonFiles.isEmpty()) return
+            
+            // Filter files whose data belongs to the target hour
+            val filesForHour = mutableListOf<File>()
+            
+            for (jsonFile in jsonFiles) {
+                try {
+                    val content = jsonFile.readText().trim()
+                    if (content.isEmpty() || !content.startsWith("[")) continue
+                    
+                    val dataArray = JSONArray(content)
+                    if (dataArray.length() == 0) continue
+                    
+                    val firstTs = dataArray.getJSONObject(0).getString("timestamp")
+                    val firstDate = isoFormat.parse(firstTs) ?: continue
+                    val fileCal = Calendar.getInstance()
+                    fileCal.time = firstDate
+                    val fileHour = fileCal.get(Calendar.HOUR_OF_DAY)
+                    
+                    if (fileHour == hour) {
+                        filesForHour.add(jsonFile)
+                    }
+                } catch (e: Exception) {
+                    Log.w("TravelSenseService", "Skipping file ${jsonFile.name} during compression: ${e.message}")
+                }
+            }
+            
+            if (filesForHour.isEmpty()) return
+            
+            // Sort files by name (they have timestamp prefixes)
+            filesForHour.sortBy { it.name }
+            
+            // Build hour-rounded archive filename: e.g., 2026-03-24_09-00-00_abc123.7z
+            val deviceId = android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "unknown_device"
+            val hourStr = String.format("%02d", hour)
+            val archiveName = "${dateStr}_${hourStr}-00-00_${deviceId}.7z"
+            val archiveFile = File(dayDir, archiveName)
+            val tempArchiveFile = File(dayDir, "$archiveName.tmp")
+            
+            try {
+                SevenZOutputFile(tempArchiveFile).use { sevenZOutput ->
+                    // If archive already exists, copy old contents first
+                    if (archiveFile.exists()) {
+                        try {
+                            SevenZFile(archiveFile).use { sevenZFile ->
+                                var entry = sevenZFile.nextEntry
+                                val newFileNames = filesForHour.map { it.name }.toSet()
+                                
+                                while (entry != null) {
+                                    if (!newFileNames.contains(entry.name)) {
+                                        val content = ByteArray(entry.size.toInt())
+                                        sevenZFile.read(content)
+                                        
+                                        val newEntry = sevenZOutput.createArchiveEntry(archiveFile, entry.name) as SevenZArchiveEntry
+                                        newEntry.size = entry.size
+                                        sevenZOutput.putArchiveEntry(newEntry)
+                                        sevenZOutput.write(content)
+                                        sevenZOutput.closeArchiveEntry()
+                                    } else {
+                                        Log.d("TravelSenseService", "Replacing overlapping archive entry: ${entry.name}")
+                                    }
+                                    
+                                    entry = sevenZFile.nextEntry
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.w("TravelSenseService", "Failed to read existing archive, it might be corrupted: ${e.message}")
+                            // We proceed and it will effectively be overwritten
+                        }
+                    }
+                    
+                    // Add the new individual JSON files to the archive
+                    for (file in filesForHour) {
+                        try {
+                            val content = file.readBytes()
+                            val entry = sevenZOutput.createArchiveEntry(file, file.name) as SevenZArchiveEntry
+                            sevenZOutput.putArchiveEntry(entry)
+                            sevenZOutput.write(content)
+                            sevenZOutput.closeArchiveEntry()
+                        } catch (e: Exception) {
+                            Log.e("TravelSenseService", "Failed to add ${file.name} to archive: ${e.message}")
+                        }
+                    }
+                }
+                
+                // Replace old archive with the new temp archive
+                if (archiveFile.exists()) {
+                    archiveFile.delete()
+                }
+                tempArchiveFile.renameTo(archiveFile)
+                
+                Log.d("TravelSenseService", "Added ${filesForHour.size} files to 7z archive: $archiveName")
+                
+                // Delete the source JSON files now that they are compressed
+                for (file in filesForHour) {
+                    if (file.delete()) {
+                        Log.d("TravelSenseService", "Deleted compressed source: ${file.name}")
+                    } else {
+                        Log.w("TravelSenseService", "Failed to delete: ${file.name}")
+                    }
+                }
+            } catch (e: Exception) {
+                tempArchiveFile.delete()
+                Log.e("TravelSenseService", "Failed to create/update 7z archive: ${e.message}")
+                // Don't delete source files if compression failed
+            }
+        } catch (e: Exception) {
+            Log.e("TravelSenseService", "Error in compressHourData($hour): ${e.message}")
         }
     }
 
@@ -300,6 +551,11 @@ class TravelSenseService : Service(), SensorEventListener {
         registerSensors()
         serviceHandler.post(ticker)
         serviceHandler.post(sensorEmitter)
+        
+        // On startup, compress any leftover JSON files from completed hours
+        serviceHandler.post {
+            compressOlderUncompressedData()
+        }
     }
 
     private fun startLocationUpdates() {
@@ -339,6 +595,8 @@ class TravelSenseService : Service(), SensorEventListener {
         unregisterSensors()
         fusedLocationClient.removeLocationUpdates(locationCallback)
         flushBufferToDisk(force = true)
+        // Do NOT compress the current hour on exit — leave JSON files for the next startup
+        // to handle, so only complete hours are ever archived
         if (wakeLock?.isHeld == true) wakeLock?.release()
         serviceThread.quitSafely()
         instance = null
