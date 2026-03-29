@@ -2197,30 +2197,33 @@ function BatteryAutoPauseManager() {
 /* ------------------ Notification Prompt ------------------ */
 
 const OPT_OUT_FILE = 'notification_opt_out.txt';
+const LOCATION_OPT_OUT_FILE = 'location_opt_out.txt';
+const WELCOME_FILE = 'welcome_complete.txt';
 
-async function checkOptOut() {
+async function checkOptOut(filename) {
   try {
-    const file = new File(Paths.document, OPT_OUT_FILE);
+    const file = new File(Paths.document, filename);
     if (file.exists) {
       const val = await file.text();
       return val === 'true';
     }
   } catch (e) {
-    console.log("checkOptOut: Error reading file", e);
+    console.log(`checkOptOut (${filename}): Error reading file`, e);
   }
   return false;
 }
 
-async function saveOptOut(val) {
+async function saveOptOut(filename, val) {
   try {
-    const file = new File(Paths.document, OPT_OUT_FILE);
+    const file = new File(Paths.document, filename);
     await file.write(val.toString());
   } catch (e) {
-    console.log("saveOptOut: Error writing file", e);
+    console.log(`saveOptOut (${filename}): Error writing file`, e);
   }
 }
 
 function NotificationPromptModal({ visible, onClose, onOptOut }) {
+  const { isDarkMode, colorTheme } = useSettings();
   const [checked, setChecked] = useState(false);
 
   const handleEnable = () => {
@@ -2239,17 +2242,21 @@ function NotificationPromptModal({ visible, onClose, onOptOut }) {
     onClose();
   };
 
+  const bgColor = isDarkMode ? '#1a1a2e' : '#FFFFFF';
+  const textColor = isDarkMode ? 'white' : '#1a1a2e';
+  const subTextColor = isDarkMode ? '#ccc' : '#666';
+
   return (
     <Modal visible={visible} transparent animationType="fade">
       <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' }}>
-        <View style={{ backgroundColor: '#1a1a2e', padding: 25, borderRadius: 15, width: '85%', elevation: 10, borderWidth: 1, borderColor: '#303050' }}>
+        <View style={{ backgroundColor: bgColor, padding: 25, borderRadius: 15, width: '85%', elevation: 10, borderWidth: 1, borderColor: isDarkMode ? '#303050' : '#E0E0E0' }}>
           <View style={{ alignItems: 'center', marginBottom: 20 }}>
-            <MaterialIcons name="notifications-active" size={50} color="#00C853" />
-            <Text style={{ color: 'white', fontSize: 22, fontWeight: 'bold', marginTop: 15, textAlign: 'center' }}>Keep Tracking Active</Text>
+            <MaterialIcons name="notifications-active" size={50} color={colorTheme} />
+            <Text style={{ color: textColor, fontSize: 22, fontWeight: 'bold', marginTop: 15, textAlign: 'center' }}>Stay in Control</Text>
           </View>
 
-          <Text style={{ color: '#ccc', fontSize: 16, textAlign: 'center', marginBottom: 25, lineHeight: 22 }}>
-            Enable notifications to monitor your recording and access controls directly from your notification bar even in the background.
+          <Text style={{ color: subTextColor, fontSize: 16, textAlign: 'center', marginBottom: 25, lineHeight: 22 }}>
+            Enable notifications to manage your trip recording and access stop/pause controls directly from your status bar, even when the app is in the background.
           </Text>
 
           <Pressable
@@ -2261,21 +2268,21 @@ function NotificationPromptModal({ visible, onClose, onOptOut }) {
               height: 20,
               borderRadius: 4,
               borderWidth: 2,
-              borderColor: '#00C853',
-              backgroundColor: checked ? '#00C853' : 'transparent',
+              borderColor: colorTheme,
+              backgroundColor: checked ? colorTheme : 'transparent',
               justifyContent: 'center',
               alignItems: 'center',
               marginRight: 10
             }}>
               {checked && <AntDesign name="check" size={14} color="white" />}
             </View>
-            <Text style={{ color: '#999', fontSize: 14 }}>Don't remind me again</Text>
+            <Text style={{ color: subTextColor, fontSize: 14 }}>Don't remind me again</Text>
           </Pressable>
 
           <View style={{ flexDirection: 'column', gap: 10 }}>
             <Pressable
               onPress={handleEnable}
-              style={{ backgroundColor: '#00C853', paddingVertical: 14, borderRadius: 10, alignItems: 'center' }}
+              style={{ backgroundColor: colorTheme, paddingVertical: 14, borderRadius: 10, alignItems: 'center' }}
             >
               <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 16 }}>Enable in Settings</Text>
             </Pressable>
@@ -2284,7 +2291,242 @@ function NotificationPromptModal({ visible, onClose, onOptOut }) {
               onPress={handleNotNow}
               style={{ paddingVertical: 10, alignItems: 'center' }}
             >
-              <Text style={{ color: '#666', fontWeight: '600', fontSize: 14 }}>Not now</Text>
+              <Text style={{ color: subTextColor, fontWeight: '600', fontSize: 14 }}>Not now</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function LocationPermissionModal({ visible, onClose, onAccept, onOptOut }) {
+  const { isDarkMode, colorTheme } = useSettings();
+  const [checked, setChecked] = useState(false);
+
+  const handleEnable = async () => {
+    onAccept();
+  };
+
+  const handleNotNow = () => {
+    if (checked) {
+      onOptOut();
+    }
+    onClose();
+  };
+
+  const bgColor = isDarkMode ? '#1a1a2e' : '#FFFFFF';
+  const textColor = isDarkMode ? 'white' : '#1a1a2e';
+  const subTextColor = isDarkMode ? '#ccc' : '#666';
+
+  return (
+    <Modal visible={visible} transparent animationType="fade">
+      <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' }}>
+        <View style={{ backgroundColor: bgColor, padding: 25, borderRadius: 15, width: '85%', elevation: 10, borderWidth: 1, borderColor: isDarkMode ? '#303050' : '#E0E0E0' }}>
+          <View style={{ alignItems: 'center', marginBottom: 20 }}>
+            <MaterialIcons name="my-location" size={50} color={colorTheme} />
+            <Text style={{ color: textColor, fontSize: 22, fontWeight: 'bold', marginTop: 15, textAlign: 'center' }}>Background Tracking</Text>
+          </View>
+
+          <Text style={{ color: subTextColor, fontSize: 16, textAlign: 'center', marginBottom: 25, lineHeight: 22 }}>
+            To record your movement accurately when the app is closed or your screen is off, please select <Text style={{fontWeight: 'bold', color: colorTheme}}>"Allow all the time"</Text> in the next screen.
+          </Text>
+          
+          <Text style={{ color: subTextColor, fontSize: 14, textAlign: 'center', marginBottom: 20 }}>
+            <Text style={{fontWeight: 'bold'}}>How to Enable:</Text> Go to Permissions → Location → Select "Allow all the time".
+          </Text>
+
+          <Pressable
+            onPress={() => setChecked(!checked)}
+            style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 25, alignSelf: 'center' }}
+          >
+            <View style={{
+              width: 20,
+              height: 20,
+              borderRadius: 4,
+              borderWidth: 2,
+              borderColor: colorTheme,
+              backgroundColor: checked ? colorTheme : 'transparent',
+              justifyContent: 'center',
+              alignItems: 'center',
+              marginRight: 10
+            }}>
+              {checked && <AntDesign name="check" size={14} color="white" />}
+            </View>
+            <Text style={{ color: subTextColor, fontSize: 14 }}>Don't remind me again</Text>
+          </Pressable>
+
+          <View style={{ flexDirection: 'column', gap: 10 }}>
+            <Pressable
+              onPress={handleEnable}
+              style={{ backgroundColor: colorTheme, paddingVertical: 14, borderRadius: 10, alignItems: 'center' }}
+            >
+              <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 16 }}>Go to Settings</Text>
+            </Pressable>
+
+            <Pressable
+              onPress={handleNotNow}
+              style={{ paddingVertical: 10, alignItems: 'center' }}
+            >
+              <Text style={{ color: subTextColor, fontWeight: '600', fontSize: 14 }}>Not now</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function ActiveTrackingGuidanceModal({ visible, onClose, onConfirm }) {
+  const { isDarkMode, colorTheme } = useSettings();
+
+  const bgColor = isDarkMode ? '#1a1a2e' : '#FFFFFF';
+  const textColor = isDarkMode ? 'white' : '#1a1a2e';
+  const subTextColor = isDarkMode ? '#ccc' : '#666';
+
+  return (
+    <Modal visible={visible} transparent animationType="fade">
+      <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' }}>
+        <View style={{ backgroundColor: bgColor, padding: 25, borderRadius: 15, width: '85%', elevation: 10, borderWidth: 1, borderColor: isDarkMode ? '#303050' : '#E0E0E0' }}>
+          <View style={{ alignItems: 'center', marginBottom: 20 }}>
+            <MaterialIcons name="navigation" size={50} color={colorTheme} />
+            <Text style={{ color: textColor, fontSize: 22, fontWeight: 'bold', marginTop: 15, textAlign: 'center' }}>Active Trip Tracking</Text>
+          </View>
+
+          <Text style={{ color: subTextColor, fontSize: 16, textAlign: 'center', marginBottom: 15, lineHeight: 22 }}>
+            To record your live path and provide accurate feedback, we need permission to track your location <Text style={{fontWeight: 'bold', color: textColor}}>"While Using the App."</Text>
+          </Text>
+          
+          <Text style={{ color: subTextColor, fontSize: 14, textAlign: 'center', marginBottom: 15 }}>
+            <Text style={{fontWeight: 'bold'}}>How to Enable:</Text> Go to Permissions → Location → Select "While using the app".
+          </Text>
+          
+          <Text style={{ color: subTextColor, fontSize: 13, textAlign: 'center', marginBottom: 25, fontStyle: 'italic' }}>
+            Note: Background tracking (screen off) is separate. We need both to ensure your trip data is never interrupted.
+          </Text>
+
+          <View style={{ flexDirection: 'column', gap: 10 }}>
+            <Pressable
+              onPress={onConfirm}
+              style={{ backgroundColor: colorTheme, paddingVertical: 14, borderRadius: 10, alignItems: 'center' }}
+            >
+              <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 16 }}>Grant Permission</Text>
+            </Pressable>
+
+            <Pressable
+              onPress={onClose}
+              style={{ paddingVertical: 10, alignItems: 'center' }}
+            >
+              <Text style={{ color: subTextColor, fontWeight: '600', fontSize: 14 }}>Not now</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function InitialWelcomeModal({ visible, onProceed, onClose }) {
+  const { isDarkMode, colorTheme } = useSettings();
+
+  const bgColor = isDarkMode ? '#1a1a2e' : '#FFFFFF';
+  const textColor = isDarkMode ? 'white' : '#1a1a2e';
+  const subTextColor = isDarkMode ? '#ccc' : '#666';
+
+  return (
+    <Modal visible={visible} transparent animationType="fade">
+      <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' }}>
+        <View style={{ backgroundColor: bgColor, padding: 25, borderRadius: 15, width: '90%', elevation: 15, borderWidth: 1, borderColor: isDarkMode ? '#303050' : '#E0E0E0' }}>
+          <View style={{ alignItems: 'center', marginBottom: 20 }}>
+            <Image 
+              source={require('./assets/travelsense-banner.png')} 
+              style={{ width: '100%', height: 60, marginBottom: 20 }}
+              resizeMode="contain"
+            />
+            <MaterialIcons name="security" size={40} color={colorTheme} />
+            <Text style={{ color: textColor, fontSize: 24, fontWeight: 'bold', marginTop: 10, textAlign: 'center' }}>Welcome to TravelSense</Text>
+          </View>
+
+          <Text style={{ color: subTextColor, fontSize: 16, textAlign: 'left', marginBottom: 15, lineHeight: 22 }}>
+            To accurately record your driving trips and analyze road safety, this app requires access to your sensors:
+          </Text>
+
+          <View style={{ marginBottom: 25 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+              <MaterialIcons name="location-on" size={20} color={colorTheme} style={{ marginRight: 10 }} />
+              <Text style={{ color: textColor, fontSize: 14, fontWeight: '600' }}>High-Precision Location</Text>
+            </View>
+            <Text style={{ color: subTextColor, fontSize: 13, marginLeft: 30, marginBottom: 10 }}>Required to track your route and calculate vehicle speeds.</Text>
+            
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+              <MaterialIcons name="directions-car" size={20} color={colorTheme} style={{ marginRight: 10 }} />
+              <Text style={{ color: textColor, fontSize: 14, fontWeight: '600' }}>Physical Activity</Text>
+            </View>
+            <Text style={{ color: subTextColor, fontSize: 13, marginLeft: 30 }}>Helps detect when you are driving to optimize battery life by starting sensors only when needed.</Text>
+          </View>
+
+          <View style={{ flexDirection: 'column', gap: 10 }}>
+            <Pressable
+              onPress={onProceed}
+              style={{ backgroundColor: colorTheme, paddingVertical: 14, borderRadius: 10, alignItems: 'center' }}
+            >
+              <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 16 }}>Agree and Continue</Text>
+            </Pressable>
+
+            <Pressable
+              onPress={onClose}
+              style={{ paddingVertical: 10, alignItems: 'center' }}
+            >
+              <Text style={{ color: subTextColor, fontWeight: '600', fontSize: 14 }}>Not now</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function ActivityRecognitionGuidanceModal({ visible, onClose, onConfirm }) {
+  const { isDarkMode, colorTheme } = useSettings();
+
+  const bgColor = isDarkMode ? '#1a1a2e' : '#FFFFFF';
+  const textColor = isDarkMode ? 'white' : '#1a1a2e';
+  const subTextColor = isDarkMode ? '#ccc' : '#666';
+
+  return (
+    <Modal visible={visible} transparent animationType="fade">
+      <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' }}>
+        <View style={{ backgroundColor: bgColor, padding: 25, borderRadius: 15, width: '85%', elevation: 10, borderWidth: 1, borderColor: isDarkMode ? '#303050' : '#E0E0E0' }}>
+          <View style={{ alignItems: 'center', marginBottom: 20 }}>
+            <MaterialIcons name="directions-car" size={50} color={colorTheme} />
+            <Text style={{ color: textColor, fontSize: 22, fontWeight: 'bold', marginTop: 15, textAlign: 'center' }}>Smart Trip Detection</Text>
+          </View>
+
+          <Text style={{ color: subTextColor, fontSize: 16, textAlign: 'center', marginBottom: 15, lineHeight: 22 }}>
+            This permission allows TravelSense to detect when you are driving automatically. 
+          </Text>
+          
+          <Text style={{ color: subTextColor, fontSize: 14, textAlign: 'center', marginBottom: 15 }}>
+            <Text style={{fontWeight: 'bold'}}>How to Enable:</Text> Go to Permissions → Physical Activity → Select "Allow".
+          </Text>
+          
+          <Text style={{ color: subTextColor, fontSize: 13, textAlign: 'center', marginBottom: 25, fontStyle: 'italic' }}>
+            Benefit: It significantly reduces battery drain by only activating GPS when vehicle movement is detected.
+          </Text>
+
+          <View style={{ flexDirection: 'column', gap: 10 }}>
+            <Pressable
+              onPress={onConfirm}
+              style={{ backgroundColor: colorTheme, paddingVertical: 14, borderRadius: 10, alignItems: 'center' }}
+            >
+              <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 16 }}>Enable Detection</Text>
+            </Pressable>
+
+            <Pressable
+              onPress={onClose}
+              style={{ paddingVertical: 10, alignItems: 'center' }}
+            >
+              <Text style={{ color: subTextColor, fontWeight: '600', fontSize: 14 }}>Not now</Text>
             </Pressable>
           </View>
         </View>
@@ -2302,7 +2544,7 @@ export default function App({ navigation }) {
   const serviceStarted = useRef(false);
   const hasCheckedNotifications = useRef(false);
   const [showBatteryModal, setShowBatteryModal] = useState(false);
-  const [showNotificationModal, setShowNotificationModal] = useState(false);
+  const [onboardingStep, setOnboardingStep] = useState(null); // 'welcome', 'fg_guidance', 'activity_guidance', 'bg_guidance', 'notifications'
 
   const handleExitRequest = () => {
     Alert.alert(
@@ -2325,39 +2567,159 @@ export default function App({ navigation }) {
     );
   };
 
-  useEffect(() => {
-    // Request critical permissions on app startup
-    (async () => {
-      const { status: foreStatus } = await Location.requestForegroundPermissionsAsync();
-      if (foreStatus === 'granted') {
-        await Location.requestBackgroundPermissionsAsync();
-        if (NativeModules.TravelSenseModule && NativeModules.TravelSenseModule.requestActivityRecognitionPermission) {
-          await NativeModules.TravelSenseModule.requestActivityRecognitionPermission()
-            .catch(err => console.log('Activity permission request failed', err));
+  const checkNotificationStatus = async () => {
+    if (hasCheckedNotifications.current) return;
+    try {
+      const { status } = await Notifications.getPermissionsAsync();
+      if (status !== 'granted') {
+        const optedOut = await checkOptOut(OPT_OUT_FILE);
+        if (!optedOut) {
+          setOnboardingStep(null);
+          setTimeout(() => setOnboardingStep('notifications'), 100);
         }
       }
-    })();
+      hasCheckedNotifications.current = true;
+    } catch (e) {
+      console.error("checkNotificationStatus error:", e);
+    }
+  };
 
+  const openSettings = async () => {
+    if (NativeModules.TravelSenseModule && NativeModules.TravelSenseModule.openNotificationSettings) {
+        // We use the existing openNotificationSettings or a generic one
+        // On Android, APP_NOTIFICATION_SETTINGS is specific, but we can use APP_DETAILS_SETTINGS
+    }
+    // Generic React Native way:
+    const pkg = "package:" + (NativeModules.TravelSenseModule ? "com.travelsense.TravelSense" : "");
+    const supported = await Linking.openSettings();
+  };
+
+  const waitForFocus = () => {
+    return new Promise((resolve) => {
+      // If already active, resolve immediately or after a slight delay
+      if (AppState.currentState === 'active') {
+        setTimeout(resolve, 300);
+        return;
+      }
+      
+      const sub = AppState.addEventListener('change', (nextState) => {
+        if (nextState === 'active') {
+          sub.remove();
+          setTimeout(resolve, 500); 
+        }
+      });
+    });
+  };
+
+  const startPermissionSequence = async (isRetry = false) => {
+    // Stage 1: Foreground Location
+    const startTime = Date.now();
+    await Location.requestForegroundPermissionsAsync();
+    const duration = Date.now() - startTime;
+    await waitForFocus();
+    
+    // Check status after dialog
+    const { status: foreStatus } = await Location.getForegroundPermissionsAsync();
+    
+    // If it failed instantly and we are from a modal, jump to settings
+    if (foreStatus !== 'granted' && isRetry && duration < 250) {
+      if (NativeModules.TravelSenseModule && NativeModules.TravelSenseModule.openAppSettings) {
+        NativeModules.TravelSenseModule.openAppSettings();
+      } else {
+        Linking.openSettings();
+      }
+      await waitForFocus();
+      // After manual setting, proceed to activity
+      await startActivitySequence();
+      return;
+    }
+
+    if (foreStatus !== 'granted') {
+      setOnboardingStep('fg_guidance');
+      return; 
+    }
+
+    // Stage 2: Physical Activity (Continue even if foreground ok)
+    await startActivitySequence();
+  };
+
+  const startActivitySequence = async (isRetry = false) => {
+    if (NativeModules.TravelSenseModule && NativeModules.TravelSenseModule.requestActivityRecognitionPermission) {
+      const startTime = Date.now();
+      const result = await NativeModules.TravelSenseModule.requestActivityRecognitionPermission().catch(() => 'error');
+      const duration = Date.now() - startTime;
+      
+      // If result is 'granted', move on
+      if (result === 'granted') {
+        await startBackgroundSequence();
+        return;
+      }
+
+      // If it failed instantly (< 250ms) and we are from a modal, the OS likely blocked it
+      if (isRetry && duration < 250) {
+        // App settings is the only way
+        if (NativeModules.TravelSenseModule.openAppSettings) {
+          NativeModules.TravelSenseModule.openAppSettings();
+        } else {
+          Linking.openSettings();
+        }
+        await waitForFocus();
+        await startBackgroundSequence();
+        return;
+      }
+
+      // If it's a first-time check (not from modal) and denied, show guidance
+      if (!isRetry) {
+        setOnboardingStep('activity_guidance');
+      } else {
+        // Human manual denial from a modal, just move to next stage
+        await startBackgroundSequence();
+      }
+    } else {
+      await startBackgroundSequence();
+    }
+  };
+
+  const startBackgroundSequence = async () => {
+    const { status: backStatus } = await Location.getBackgroundPermissionsAsync();
+    if (backStatus !== 'granted') {
+      const optedOut = await checkOptOut(LOCATION_OPT_OUT_FILE);
+      if (!optedOut) {
+        setOnboardingStep('bg_guidance');
+      } else {
+        setTimeout(() => checkNotificationStatus(), 500);
+      }
+    } else {
+      setTimeout(() => checkNotificationStatus(), 500);
+    }
+  };
+
+  useEffect(() => {
     SensorUpload.loadFromDisk();
+    
+    const checkInitialStatus = async () => {
+      const { status: foreStatus } = await Location.getForegroundPermissionsAsync();
+      if (foreStatus !== 'granted') {
+        const welcomeComplete = await checkOptOut(WELCOME_FILE);
+        if (!welcomeComplete) {
+          setOnboardingStep('welcome');
+        } else {
+          setOnboardingStep('fg_guidance');
+        }
+      } else {
+        startPermissionSequence();
+      }
+    };
+    
+    checkInitialStatus();
+
     if (!NativeModules.TravelSenseModule) return;
 
-    const pauseSub = DeviceEventEmitter.addListener('onNotificationPauseToggle', () => {
-      console.log("onNotificationPauseToggle event received");
-      setIsPaused(prev => !prev);
-    });
-
+    const pauseSub = DeviceEventEmitter.addListener('onNotificationPauseToggle', () => setIsPaused(prev => !prev));
     const tickSub = DeviceEventEmitter.addListener('onServiceTick', (event) => {
-      if (event && event.value !== undefined) {
-        // console.log("onServiceTick received:", event.value);
-        setElapsedTime(event.value);
-      }
+      if (event && event.value !== undefined) setElapsedTime(event.value);
     });
-
-    const exitSub = DeviceEventEmitter.addListener('onNotificationExit', async () => {
-      console.log("onNotificationExit event received");
-      handleExitRequest();
-    });
-
+    const exitSub = DeviceEventEmitter.addListener('onNotificationExit', () => handleExitRequest());
     const batterySub = DeviceEventEmitter.addListener('onBatteryAutoPause', () => {
       setIsPaused(true);
       setShowBatteryModal(true);
@@ -2481,36 +2843,8 @@ export default function App({ navigation }) {
     return () => backHandler.remove();
   }, []);
 
-  useEffect(() => {
-    const checkNotificationStatus = async () => {
-      if (hasCheckedNotifications.current) return;
-
-      try {
-        const { status } = await Notifications.getPermissionsAsync();
-        console.log("checkNotificationStatus: Current status:", status);
-        if (status !== 'granted') {
-          const optedOut = await checkOptOut();
-          if (!optedOut) {
-            setShowNotificationModal(true);
-          }
-        }
-        hasCheckedNotifications.current = true;
-      } catch (e) {
-        console.error("checkNotificationStatus error:", e);
-      }
-    };
-
-    checkNotificationStatus();
-
-    // Check when app resumes from background (Only if not already shown this session)
-    const sub = AppState.addEventListener('change', (nextState) => {
-      if (nextState === 'active' && !hasCheckedNotifications.current) {
-        checkNotificationStatus();
-      }
-    });
-
-    return () => sub.remove();
-  }, []);
+  // Note: Permission sequence is now strictly linear through startPermissionSequence
+  // Redundant AppState listener removed to prevent overlapping modals during dialog transitions.
 
   return (
     <RecordingContext.Provider value={{ isPaused, setIsPaused, elapsedTime, setElapsedTime }}>
@@ -2536,11 +2870,66 @@ export default function App({ navigation }) {
         </Drawer.Navigator>
       </NavigationContainer>
       <NotificationPromptModal
-        visible={showNotificationModal}
-        onClose={() => setShowNotificationModal(false)}
+        visible={onboardingStep === 'notifications'}
+        onClose={() => setOnboardingStep(null)}
         onOptOut={async () => {
-          await saveOptOut(true);
-          setShowNotificationModal(false);
+          await saveOptOut(OPT_OUT_FILE, true);
+          setOnboardingStep(null);
+        }}
+      />
+      <LocationPermissionModal
+        visible={onboardingStep === 'bg_guidance'}
+        onClose={async () => {
+          setOnboardingStep(null);
+          setTimeout(() => checkNotificationStatus(), 100);
+        }}
+        onAccept={async () => {
+          setOnboardingStep(null);
+          await Location.requestBackgroundPermissionsAsync();
+          await waitForFocus(); // Wait for user to return from settings
+          setTimeout(() => checkNotificationStatus(), 100);
+        }}
+        onOptOut={async () => {
+          await saveOptOut(LOCATION_OPT_OUT_FILE, true);
+          setOnboardingStep(null);
+          setTimeout(() => checkNotificationStatus(), 100);
+        }}
+      />
+      <InitialWelcomeModal
+        visible={onboardingStep === 'welcome'}
+        onProceed={async () => {
+          await saveOptOut(WELCOME_FILE, true);
+          setOnboardingStep(null);
+          setTimeout(() => startPermissionSequence(), 300);
+        }}
+        onClose={() => setOnboardingStep(null)}
+      />
+      <ActiveTrackingGuidanceModal
+        visible={onboardingStep === 'fg_guidance'}
+        onConfirm={async () => {
+           setOnboardingStep(null);
+           // After granting foreground, proceed to Activity Recognition
+           setTimeout(async () => {
+               await startPermissionSequence(true);
+           }, 300);
+        }}
+        onClose={() => {
+           setOnboardingStep(null);
+           // Regardless of location result, always prompt for Activity next
+           setTimeout(() => startActivitySequence(), 300);
+        }}
+      />
+      <ActivityRecognitionGuidanceModal
+        visible={onboardingStep === 'activity_guidance'}
+        onConfirm={async () => {
+           setOnboardingStep(null);
+           // After attempting, if it fails, the next call will trigger settings fallback
+           setTimeout(() => startActivitySequence(true), 300);
+        }}
+        onClose={() => {
+           setOnboardingStep(null);
+           // Proceed to next sequence anyway
+           setTimeout(() => startBackgroundSequence(), 300);
         }}
       />
     </RecordingContext.Provider>

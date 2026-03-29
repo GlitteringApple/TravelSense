@@ -17,7 +17,10 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.WritableMap
 
-class TravelSenseModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
+import com.facebook.react.modules.core.PermissionListener
+
+class TravelSenseModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext), PermissionListener {
+    private var activityPromise: Promise? = null
 
     init {
         Companion.reactContext = reactContext
@@ -88,19 +91,50 @@ class TravelSenseModule(reactContext: ReactApplicationContext) : ReactContextBas
             val permission = Manifest.permission.ACTIVITY_RECOGNITION
             val status = ContextCompat.checkSelfPermission(reactApplicationContext, permission)
             if (status != PackageManager.PERMISSION_GRANTED) {
-            val activity = getCurrentActivity()
-            if (activity != null) {
-                ActivityCompat.requestPermissions(activity, arrayOf(permission), 100)
-                promise.resolve("requested")
-            } else {
-                promise.reject("ERROR", "No current activity")
-            }
+                val activity = getCurrentActivity()
+                if (activity is com.facebook.react.modules.core.PermissionAwareActivity) {
+                    activityPromise = promise
+                    activity.requestPermissions(arrayOf(permission), 100, this)
+                } else {
+                    val currentActivity = getCurrentActivity()
+                    if (currentActivity != null) {
+                        try {
+                            activityPromise = promise
+                            ActivityCompat.requestPermissions(currentActivity, arrayOf(permission), 100)
+                            // Safety fallback if no result comes back after 30 seconds
+                            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                if (activityPromise != null) {
+                                    val newStatus = ContextCompat.checkSelfPermission(reactApplicationContext, permission)
+                                    activityPromise?.resolve(if (newStatus == PackageManager.PERMISSION_GRANTED) "granted" else "denied")
+                                    activityPromise = null
+                                }
+                            }, 30000)
+                        } catch (e: Exception) {
+                            promise.reject("ERROR", "Failed to show request: ${e.message}")
+                        }
+                    } else {
+                        promise.reject("ERROR", "No current activity")
+                    }
+                }
             } else {
                 promise.resolve("granted")
             }
         } else {
             promise.resolve("not_required")
         }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray): Boolean {
+        if (requestCode == 100) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                activityPromise?.resolve("granted")
+            } else {
+                activityPromise?.resolve("denied")
+            }
+            activityPromise = null
+            return true
+        }
+        return false
     }
 
     @ReactMethod
@@ -136,6 +170,25 @@ class TravelSenseModule(reactContext: ReactApplicationContext) : ReactContextBas
             promise.resolve(map)
         } else {
             promise.resolve(null)
+        }
+    }
+
+    @ReactMethod
+    fun openAppSettings() {
+        try {
+            // Attempt to go directly to Permissions screen (if supported)
+            val intent = Intent("android.intent.action.MANAGE_APP_PERMISSIONS")
+            intent.putExtra("android.intent.extra.PACKAGE_NAME", reactApplicationContext.packageName)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            reactApplicationContext.startActivity(intent)
+        } catch (e: Exception) {
+            // Fallback to general App Info screen
+            val intent = Intent().apply {
+                action = Settings.ACTION_APPLICATION_DETAILS_SETTINGS
+                data = Uri.fromParts("package", reactApplicationContext.packageName, null)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            reactApplicationContext.startActivity(intent)
         }
     }
 
