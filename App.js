@@ -20,7 +20,8 @@ import {
   NativeModules,
   DeviceEventEmitter,
   AppState,
-  Linking
+  Linking,
+  PanResponder
 } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { File, Paths } from 'expo-file-system';
@@ -28,6 +29,8 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import ButtonRound from "./components/ButtonRound"
 import GraphCard from './components/GraphCard';
 import { useSensorData } from './src/sensors/Sensor';
+import DateTimePicker from '@react-native-community/datetimepicker';
+
 const mapImg = require("./assets/carte-geographique-du-monde.jpg");
 import {
   NavigationContainer,
@@ -38,7 +41,7 @@ import {
 const navigationRef = createNavigationContainerRef();
 import { createBottomTabNavigator, useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import * as Location from 'expo-location';
-import { useEffect, useRef, useState, useMemo, createContext, useContext } from 'react';
+import { useEffect, useRef, useState, useMemo, createContext, useContext, memo, forwardRef } from 'react';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -52,6 +55,10 @@ import Animated, {
   SlideOutRight,
   SlideInUp,
   SlideOutUp,
+  runOnJS,
+  LinearTransition,
+  FadeInDown,
+  FadeOutUp,
 } from 'react-native-reanimated';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import {
@@ -70,7 +77,7 @@ import {
   Group,
   useDerivedValue,
 } from "@shopify/react-native-skia";
-import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import { GestureHandlerRootView, Gesture, GestureDetector } from "react-native-gesture-handler";
 import { SettingsProvider, useSettings } from './src/contexts/SettingsContext';
 import * as Battery from 'expo-battery';
 import Slider from '@react-native-community/slider';
@@ -135,6 +142,7 @@ function DrawerStack() {
       animation: 'default', headerShown: true, headerBackButtonMenuEnabled: false
     }}>
       <Stack.Screen name="Home" options={{ headerShown: false, gestureEnabled: false }} component={Tabs} />
+      <Stack.Screen name="TabsRoot" component={Tabs} options={{ headerShown: false }} />
       <Stack.Screen name="Settings" component={SettingsScreen} />
       <Stack.Screen name="About Us" component={AboutUsScreen} />
     </Stack.Navigator>
@@ -1787,15 +1795,545 @@ function DataScreen(props) {
   );
 }
 
+function RouteScrubber({ onProgressUpdate, initialProgress, colorTheme, themeColors, startTime, endTime }) {
+  const progress = useSharedValue(initialProgress);
+  const barWidth = useSharedValue(0);
+
+  const animatedThumbStyle = useAnimatedStyle(() => ({
+    left: `${progress.value * 100}%`,
+  }));
+
+  const animatedProgressStyle = useAnimatedStyle(() => ({
+    width: `${progress.value * 100}%`,
+  }));
+
+  const pan = Gesture.Pan()
+    .onBegin((e) => {
+      'worklet';
+      if (barWidth.value <= 0) return;
+      let p = e.x / barWidth.value;
+      p = Math.max(0, Math.min(1, p));
+      progress.value = p;
+      runOnJS(onProgressUpdate)(p, true); // true = jump/begin
+    })
+    .onUpdate((e) => {
+      'worklet';
+      if (barWidth.value <= 0) return;
+      let p = e.x / barWidth.value;
+      p = Math.max(0, Math.min(1, p));
+      progress.value = p;
+      runOnJS(onProgressUpdate)(p, false); // false = drag
+    });
+
+  return (
+    <View>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5 }}>
+        <Text style={{ color: themeColors.textSecondary, fontSize: 11, fontWeight: '600' }}>{startTime}</Text>
+        <Text style={{ color: themeColors.textSecondary, fontSize: 11, fontWeight: '600' }}>{endTime}</Text>
+      </View>
+      <GestureDetector gesture={pan}>
+        <View
+          style={{ height: 30, justifyContent: 'center' }}
+          onLayout={(e) => { barWidth.value = e.nativeEvent.layout.width; }}
+        >
+          <View style={{ height: 6, backgroundColor: themeColors.border, borderRadius: 3, width: '100%' }}>
+            <Animated.View style={[{ height: '100%', backgroundColor: colorTheme, borderRadius: 3 }, animatedProgressStyle]} />
+            <Animated.View style={[{
+              position: 'absolute',
+              top: -7,
+              marginLeft: -10,
+              width: 20,
+              height: 20,
+              borderRadius: 10,
+              backgroundColor: 'white',
+              borderWidth: 3,
+              borderColor: colorTheme,
+              elevation: 3,
+            }, animatedThumbStyle]} />
+          </View>
+        </View>
+      </GestureDetector>
+    </View>
+  );
+}
+
+const MemoizedTripMap = memo(forwardRef(({ currentTrip, carPos, colorTheme, selectedTripId }, ref) => {
+  return (
+    <MapView
+      ref={ref}
+      provider={PROVIDER_GOOGLE}
+      style={{ flex: 1 }}
+      initialRegion={{
+        latitude: 9.98,
+        longitude: 76.32,
+        latitudeDelta: 0.15,
+        longitudeDelta: 0.15,
+      }}
+    >
+      {selectedTripId && currentTrip && (
+        <>
+          <Polyline
+            coordinates={currentTrip.coordinates}
+            strokeColor={colorTheme}
+            strokeWidth={4}
+          />
+          <Marker coordinate={carPos}>
+            <View style={{
+              backgroundColor: 'white',
+              padding: 8,
+              borderRadius: 20,
+              elevation: 5,
+              borderWidth: 2,
+              borderColor: colorTheme,
+            }}>
+              <FontAwesome5 name="car" size={18} color={colorTheme} />
+            </View>
+          </Marker>
+        </>
+      )}
+    </MapView>
+  );
+}), (prev, next) => {
+  return (
+    prev.selectedTripId === next.selectedTripId &&
+    prev.carPos?.latitude === next.carPos?.latitude &&
+    prev.carPos?.longitude === next.carPos?.longitude &&
+    prev.currentTrip?.id === next.currentTrip?.id
+  );
+});
+
+const MemoizedTripCard = memo(({ trip, index, isSelected, onSelect, carProgress, colorTheme, themeColors, onScrubberInteraction, onLayout }) => {
+  return (
+    <Animated.View 
+      onLayout={onLayout}
+      layout={LinearTransition}
+      style={{
+        backgroundColor: themeColors.card,
+        borderRadius: 20,
+        marginBottom: 15,
+        elevation: isSelected ? 8 : 4,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: isSelected ? 0.2 : 0.1,
+        shadowRadius: 4,
+        borderWidth: 2,
+        borderColor: isSelected ? colorTheme : themeColors.border,
+        overflow: 'hidden'
+      }}
+    >
+      <Pressable 
+        onPress={() => onSelect(trip.id)}
+        style={({ pressed }) => ({
+          padding: 20,
+          opacity: pressed ? 0.9 : 1,
+        })}
+      >
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: isSelected ? 20 : 0 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <View style={{
+              backgroundColor: colorTheme + '20',
+              padding: 12,
+              borderRadius: 15,
+              marginRight: 15,
+            }}>
+              <FontAwesome5 name="route" size={20} color={colorTheme} />
+            </View>
+            <View>
+              <Text style={{ fontSize: 18, fontWeight: 'bold', color: themeColors.text }}>Trip {index + 1}</Text>
+              <Text style={{ color: themeColors.textSecondary, fontSize: 12 }}>{trip.duration} • {trip.distance}</Text>
+            </View>
+          </View>
+        </View>
+      </Pressable>
+
+      {isSelected && (
+        <Animated.View 
+          entering={FadeInDown.duration(300)}
+          exiting={FadeOutUp.duration(200)}
+          style={{ width: '100%', paddingHorizontal: 20, paddingBottom: 20 }}
+        >
+          <Text style={{ color: themeColors.textSecondary, fontSize: 12, marginBottom: 10, fontWeight: '600' }}>
+            Tap or drag to trace route
+          </Text>
+          <RouteScrubber 
+            initialProgress={carProgress / (trip.coordinates.length - 1)}
+            onProgressUpdate={(p, isBegin) => {
+              onScrubberInteraction && onScrubberInteraction(p, trip, isBegin);
+            }}
+            colorTheme={colorTheme}
+            themeColors={themeColors}
+            startTime={trip.startTime}
+            endTime={trip.endTime}
+          />
+        </Animated.View>
+      )}
+    </Animated.View>
+  );
+}, (prev, next) => {
+  // Optimization: Skip re-render if not selected and selection didn't change
+  if (prev.isSelected !== next.isSelected) return false;
+  if (next.isSelected && prev.carProgress !== next.carProgress) return false;
+  return true;
+});
+
+function HorizontalCalendar({ colorTheme, themeColors, selectedDate, onDateSelect, centerDate }) {
+  const today = new Date().toDateString();
+  const dates = [];
+  const baseDate = new Date(centerDate || selectedDate);
+  
+  // Generate 7 days around the base (centered) date
+  for (let i = -3; i <= 3; i++) {
+    const d = new Date(baseDate);
+    d.setDate(baseDate.getDate() + i);
+    const fullDate = d.toDateString();
+    dates.push({
+      dayName: d.toLocaleDateString('en-US', { weekday: 'short' }),
+      dateNum: d.getDate(),
+      isToday: fullDate === today,
+      isSelected: fullDate === selectedDate,
+      fullDate: fullDate
+    });
+  }
+
+  return (
+    <ScrollView 
+      horizontal 
+      showsHorizontalScrollIndicator={false} 
+      contentContainerStyle={{ paddingVertical: 10 }}
+    >
+      {dates.map((item, index) => (
+        <Pressable 
+          key={index}
+          onPress={() => onDateSelect(item.fullDate)}
+          style={{
+            width: 60,
+            height: 80,
+            backgroundColor: item.isSelected ? colorTheme : themeColors.card,
+            borderRadius: 20,
+            justifyContent: 'center',
+            alignItems: 'center',
+            marginRight: 12,
+            borderWidth: item.isSelected ? 0 : 1,
+            borderColor: themeColors.border,
+            elevation: item.isSelected ? 5 : 0,
+            shadowColor: colorTheme,
+            shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: item.isSelected ? 0.3 : 0,
+            shadowRadius: 4,
+          }}
+        >
+          <Text style={{ 
+            fontSize: 12, 
+            color: item.isSelected ? 'white' : themeColors.textSecondary,
+            fontWeight: '600',
+            marginBottom: 5 
+          }}>
+            {item.dayName}
+          </Text>
+          <Text style={{ 
+            fontSize: 20, 
+            color: item.isSelected ? 'white' : themeColors.text,
+            fontWeight: 'bold' 
+          }}>
+            {item.dateNum}
+          </Text>
+          {item.isToday && (
+            <View style={{ 
+              width: 5, 
+              height: 5, 
+              borderRadius: 2.5, 
+              backgroundColor: item.isSelected ? 'white' : colorTheme, 
+              marginTop: 5 
+            }} />
+          )}
+        </Pressable>
+      ))}
+    </ScrollView>
+  );
+}
+
 function TravelogueScreen() {
-  const { isDarkMode } = useSettings();
+  const { isDarkMode, colorTheme } = useSettings();
+  const [selectedDate, setSelectedDate] = useState(new Date().toDateString());
+  const [selectedCenterDate, setSelectedCenterDate] = useState(new Date().toDateString());
+  const [selectedTripId, setSelectedTripId] = useState(null);
+  const [carProgress, setCarProgress] = useState(0);
+  const [showPicker, setShowPicker] = useState(false);
+  
+  const mapRef = useRef(null);
+  const listRef = useRef(null);
+  const cardPositions = useRef({});
+  
+  const handleDateSelect = (date) => {
+    setSelectedDate(date);
+    setSelectedCenterDate(date);
+    setSelectedTripId(null);
+    setCarProgress(0);
+  };
+
+  const onDateChange = (event, selectedDateObj) => {
+    // Hide picker immediately after selection/cancel
+    setShowPicker(false);
+    
+    if (selectedDateObj) {
+      handleDateSelect(selectedDateObj.toDateString());
+    }
+  };
+
   const themeColors = {
     background: isDarkMode ? '#121212' : '#f5f5f5',
+    card: isDarkMode ? '#1e1e1e' : '#ffffff',
     text: isDarkMode ? '#ffffff' : '#000000',
+    textSecondary: isDarkMode ? '#aaaaaa' : '#666666',
+    border: isDarkMode ? '#333333' : '#e0e0e0',
+  };
+
+  const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+  const handleTripSelect = (id) => {
+    const isExpanding = selectedTripId !== id;
+    setSelectedTripId(isExpanding ? id : null);
+    setCarProgress(0);
+
+    // Auto-scroll to ensure expansion is visible
+    if (isExpanding && cardPositions.current[id] !== undefined) {
+      setTimeout(() => {
+        listRef.current?.scrollTo({ 
+          y: cardPositions.current[id], 
+          animated: true 
+        });
+      }, 100);
+    }
+  };
+
+  // Mock trips data with coordinates
+  const [trips, setTrips] = useState([
+    {
+      id: 1, duration: '45 mins', distance: '12.4 km',
+      startTime: '09:00 AM', endTime: '09:45 AM',
+      date: new Date().toDateString(),
+      coordinates: [
+        { latitude: 9.9312, longitude: 76.2673 },
+        { latitude: 9.9350, longitude: 76.2850 },
+        { latitude: 9.9500, longitude: 76.3000 },
+        { latitude: 9.9700, longitude: 76.3150 },
+        { latitude: 9.9910, longitude: 76.3300 },
+        { latitude: 10.0050, longitude: 76.3500 },
+        { latitude: 10.0150, longitude: 76.3650 },
+        { latitude: 10.0250, longitude: 76.3800 },
+      ]
+    },
+    {
+      id: 2, duration: '30 mins', distance: '8.2 km',
+      startTime: '10:30 AM', endTime: '11:00 AM',
+      date: new Date().toDateString(),
+      coordinates: [
+        { latitude: 10.0250, longitude: 76.3800 },
+        { latitude: 10.0150, longitude: 76.3650 },
+        { latitude: 10.0050, longitude: 76.3500 },
+        { latitude: 9.9910, longitude: 76.3300 },
+      ]
+    },
+    {
+      id: 3, duration: '15 mins', distance: '4.5 km',
+      startTime: '01:15 PM', endTime: '01:30 PM',
+      date: new Date().toDateString(),
+      coordinates: [
+        { latitude: 9.9910, longitude: 76.3300 },
+        { latitude: 9.9800, longitude: 76.3200 },
+        { latitude: 9.9700, longitude: 76.3150 },
+      ]
+    },
+    {
+      id: 4, duration: '25 mins', distance: '6.8 km',
+      startTime: '04:00 PM', endTime: '04:25 PM',
+      date: new Date().toDateString(),
+      coordinates: [
+        { latitude: 9.9700, longitude: 76.3150 },
+        { latitude: 9.9600, longitude: 76.3000 },
+        { latitude: 9.9500, longitude: 76.2800 },
+      ]
+    },
+    {
+      id: 5, duration: '50 mins', distance: '15.2 km',
+      startTime: '07:30 PM', endTime: '08:20 PM',
+      date: new Date().toDateString(),
+      coordinates: [
+        { latitude: 9.9500, longitude: 76.2800 },
+        { latitude: 9.9800, longitude: 76.3300 },
+        { latitude: 10.0200, longitude: 76.3800 },
+        { latitude: 10.0500, longitude: 76.4200 },
+      ]
+    },
+    {
+      id: 6, duration: '20 mins', distance: '5.1 km',
+      startTime: '07:15 AM', endTime: '07:35 AM',
+      date: new Date(new Date().setDate(new Date().getDate() - 1)).toDateString(), // Yesterday
+      coordinates: [
+        { latitude: 9.9312, longitude: 76.2673 },
+        { latitude: 9.9400, longitude: 76.2700 },
+        { latitude: 9.9500, longitude: 76.2800 },
+      ]
+    }
+  ]);
+
+  const filteredTrips = trips.filter(t => t.date === selectedDate);
+  const currentTrip = filteredTrips.find(t => t.id === selectedTripId) || null;
+  
+  const getInterpolatedPos = (coords, progress) => {
+    if (!coords || coords.length === 0) return null;
+    const index = Math.floor(progress);
+    const nextIndex = Math.min(index + 1, coords.length - 1);
+    const factor = progress - index;
+
+    if (index === nextIndex) return coords[index];
+
+    const A = coords[index];
+    const B = coords[nextIndex];
+
+    return {
+      latitude: A.latitude + (B.latitude - A.latitude) * factor,
+      longitude: A.longitude + (B.longitude - A.longitude) * factor,
+    };
+  };
+
+  const carPos = currentTrip ? getInterpolatedPos(currentTrip.coordinates, carProgress) : null;
+
+  const handleScrubberUpdate = (p, trip, isBegin) => {
+    const newProgress = p * (trip.coordinates.length - 1);
+    setCarProgress(newProgress);
+    const newPos = getInterpolatedPos(trip.coordinates, newProgress);
+    
+    // Eliminate lag by differentiating between Jumps and Drags
+    if (isBegin) {
+      // Smooth initial glide for jumps/taps
+      mapRef.current?.animateCamera({ center: newPos }, { duration: 300 });
+    } else {
+      // Instant follow for zero-lag feeling during drag
+      mapRef.current?.setCamera({ center: newPos });
+    }
   };
   return (
-    <View style={[styles.settingsScreen, { backgroundColor: themeColors.background }]}>
-      <Text style={{ color: themeColors.text }}>This is the travelogue screen.</Text>
+    <View style={{ flex: 1, backgroundColor: themeColors.background }}>
+      {/* Native Android Date Picker Trigger */}
+      {showPicker && (
+        <DateTimePicker
+          value={new Date(selectedDate)}
+          mode="date"
+          display="default"
+          onChange={onDateChange}
+        />
+      )}
+
+      {/* FIXED HEADER: PICKER & DATE */}
+      <View style={{ padding: 20, paddingBottom: 10 }}>
+        <View style={{ 
+          flexDirection: 'row', 
+          justifyContent: 'space-between', 
+          alignItems: 'center', 
+          marginBottom: 15
+        }}>
+          <View>
+            <Text style={{ 
+              fontSize: 18, 
+              color: themeColors.text, 
+              fontWeight: 'bold', 
+            }}>
+              {new Date(selectedDate).toLocaleDateString(undefined, {
+                month: 'short',
+                day: 'numeric',
+                year: 'numeric'
+              })}
+            </Text>
+            <Text style={{ fontSize: 12, color: themeColors.textSecondary }}>
+              {new Date(selectedDate).toLocaleDateString(undefined, { weekday: 'long' })}
+            </Text>
+          </View>
+
+          <Pressable 
+            onPress={() => setShowPicker(true)}
+            style={{ 
+              backgroundColor: colorTheme + '20', 
+              paddingHorizontal: 15, 
+              paddingVertical: 8, 
+              borderRadius: 12,
+              flexDirection: 'row',
+              alignItems: 'center'
+            }}
+          >
+            <FontAwesome5 name="calendar-alt" size={14} color={colorTheme} style={{ marginRight: 8 }} />
+            <Text style={{ color: colorTheme, fontWeight: '700', fontSize: 12 }}>Pick Date</Text>
+          </Pressable>
+        </View>
+        
+        <View style={{
+          backgroundColor: themeColors.card,
+          borderRadius: 24,
+          elevation: 8,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 4 },
+          shadowOpacity: 0.3,
+          shadowRadius: 4.65,
+          aspectRatio: 1.2,
+          borderWidth: 1,
+          borderColor: themeColors.border,
+          overflow: 'hidden',
+          marginBottom: 10
+        }}>
+          <MemoizedTripMap 
+            ref={mapRef}
+            currentTrip={currentTrip} 
+            carPos={carPos} 
+            colorTheme={colorTheme} 
+            selectedTripId={selectedTripId} 
+          />
+        </View>
+      </View>
+
+      {/* SCROLLABLE LIST: TRIPS */}
+      <ScrollView 
+        ref={listRef}
+        style={{ flex: 1 }} 
+        contentContainerStyle={{ padding: 20, paddingBottom: 100 }}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={{ marginTop: 5 }}>
+          {filteredTrips.length > 0 ? (
+            filteredTrips.map((trip, index) => (
+              <MemoizedTripCard 
+                key={trip.id}
+                trip={trip}
+                index={index}
+                isSelected={selectedTripId === trip.id}
+                onSelect={handleTripSelect}
+                carProgress={carProgress}
+                colorTheme={colorTheme}
+                themeColors={themeColors}
+                onScrubberInteraction={handleScrubberUpdate}
+                onLayout={(e) => {
+                  cardPositions.current[trip.id] = e.nativeEvent.layout.y;
+                }}
+              />
+            ))
+          ) : (
+            <View style={{ 
+              backgroundColor: themeColors.card, 
+              padding: 24, 
+              borderRadius: 24, 
+              alignItems: 'center',
+              borderWidth: 1,
+              borderColor: themeColors.border,
+              marginTop: 15
+            }}>
+              <FontAwesome5 name="calendar-times" size={32} color={themeColors.textSecondary} />
+              <Text style={{ color: themeColors.text, fontSize: 16, fontWeight: 'bold', marginTop: 10 }}>No Journeys</Text>
+              <Text style={{ color: themeColors.textSecondary, fontSize: 13, textAlign: 'center', marginTop: 5 }}>
+                No travel data recorded for this date.
+              </Text>
+            </View>
+          )}
+        </View>
+      </ScrollView>
     </View>
   );
 }
@@ -2128,7 +2666,7 @@ function CustomDrawerContent(props) {
         activeBackgroundColor={colorTheme}
         labelStyle={{ color: state.index === 0 ? 'white' : themeColors.text }}
         icon={({ color, size }) => (<AntDesign name="home" size={24} color={state.index === 0 ? 'white' : themeColors.text} />)}
-        onPress={() => props.navigation.navigate('Main', { screen: 'HomeScreen' })}
+        onPress={() => props.navigation.navigate('Main', { screen: 'TabsRoot' })}
       />
       <DrawerItem
         label="Settings"

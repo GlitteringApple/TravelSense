@@ -11,6 +11,7 @@
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-community/slider": "5.0.1",
+    "@react-native-community/datetimepicker": "^9.1.0",
     "@react-navigation/bottom-tabs": "^7.10.1",
     "@react-navigation/drawer": "^7.7.13",
     "@react-navigation/native": "^7.1.28",
@@ -22,6 +23,7 @@
     "expo-dev-client": "~6.0.20",
     "expo-document-picker": "~14.0.8",
     "expo-file-system": "~19.0.21",
+    "expo-image-picker": "~17.0.10",
     "expo-location": "~19.0.8",
     "expo-modules-core": "~3.0.29",
     "expo-notifications": "~0.32.16",
