@@ -2384,9 +2384,8 @@ function SettingsScreen() {
 
   return (
     <ScrollView style={[styles.settingsScreen, { backgroundColor: themeColors.background }]}>
-      <View style={{ paddingTop: insets.top, paddingBottom: insets.bottom + 20 }}>
-        <Text style={[styles.headerText, { color: themeColors.text }]}>Settings</Text>
-
+      <View style={{ paddingTop: 0, paddingBottom: insets.bottom + 20 }}>
+        <Text style={[styles.sectionTitle, { color: themeColors.textSecondary, marginTop: 0 }]}>PREFERENCES</Text>
         <View style={[styles.settingsCard, { backgroundColor: themeColors.card, borderColor: themeColors.border }]}>
           <View style={styles.settingRow}>
             <View>
@@ -2760,6 +2759,22 @@ async function saveOptOut(filename, val) {
   }
 }
 
+const PermissionProgressBar = ({ step, total = 4 }) => {
+  const { colorTheme, isDarkMode } = useSettings();
+  const progress = (step) / total;
+
+  return (
+    <View style={{ width: '100%', marginBottom: 20 }}>
+      <Text style={{ color: isDarkMode ? '#aaa' : '#888', fontSize: 12, marginBottom: 8, fontWeight: '600', textAlign: 'center' }}>
+        Step {step} of {total}
+      </Text>
+      <View style={{ height: 6, backgroundColor: isDarkMode ? '#333' : '#eee', borderRadius: 3, overflow: 'hidden' }}>
+        <View style={{ height: '100%', backgroundColor: colorTheme, width: `${progress * 100}%` }} />
+      </View>
+    </View>
+  );
+};
+
 function NotificationPromptModal({ visible, onClose, onOptOut }) {
   const { isDarkMode, colorTheme } = useSettings();
   const [checked, setChecked] = useState(false);
@@ -2792,6 +2807,8 @@ function NotificationPromptModal({ visible, onClose, onOptOut }) {
             <MaterialIcons name="notifications-active" size={50} color={colorTheme} />
             <Text style={{ color: textColor, fontSize: 22, fontWeight: 'bold', marginTop: 15, textAlign: 'center' }}>Stay in Control</Text>
           </View>
+
+          <PermissionProgressBar step={4} />
 
           <Text style={{ color: subTextColor, fontSize: 16, textAlign: 'center', marginBottom: 25, lineHeight: 22 }}>
             Enable notifications to manage your trip recording and access stop/pause controls directly from your status bar, even when the app is in the background.
@@ -2866,6 +2883,8 @@ function LocationPermissionModal({ visible, onClose, onAccept, onOptOut }) {
             <Text style={{ color: textColor, fontSize: 22, fontWeight: 'bold', marginTop: 15, textAlign: 'center' }}>Background Tracking</Text>
           </View>
 
+          <PermissionProgressBar step={3} />
+
           <Text style={{ color: subTextColor, fontSize: 16, textAlign: 'center', marginBottom: 25, lineHeight: 22 }}>
             To record your movement accurately when the app is closed or your screen is off, please select <Text style={{fontWeight: 'bold', color: colorTheme}}>"Allow all the time"</Text> in the next screen.
           </Text>
@@ -2931,6 +2950,8 @@ function ActiveTrackingGuidanceModal({ visible, onClose, onConfirm }) {
             <Text style={{ color: textColor, fontSize: 22, fontWeight: 'bold', marginTop: 15, textAlign: 'center' }}>Active Trip Tracking</Text>
           </View>
 
+          <PermissionProgressBar step={1} />
+
           <Text style={{ color: subTextColor, fontSize: 16, textAlign: 'center', marginBottom: 15, lineHeight: 22 }}>
             To record your live path and provide accurate feedback, we need permission to track your location <Text style={{fontWeight: 'bold', color: textColor}}>"While Using the App."</Text>
           </Text>
@@ -2976,11 +2997,6 @@ function InitialWelcomeModal({ visible, onProceed, onClose }) {
       <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' }}>
         <View style={{ backgroundColor: bgColor, padding: 25, borderRadius: 15, width: '90%', elevation: 15, borderWidth: 1, borderColor: isDarkMode ? '#303050' : '#E0E0E0' }}>
           <View style={{ alignItems: 'center', marginBottom: 20 }}>
-            <Image 
-              source={require('./assets/travelsense-banner.png')} 
-              style={{ width: '100%', height: 60, marginBottom: 20 }}
-              resizeMode="contain"
-            />
             <MaterialIcons name="security" size={40} color={colorTheme} />
             <Text style={{ color: textColor, fontSize: 24, fontWeight: 'bold', marginTop: 10, textAlign: 'center' }}>Welcome to TravelSense</Text>
           </View>
@@ -3039,6 +3055,8 @@ function ActivityRecognitionGuidanceModal({ visible, onClose, onConfirm }) {
             <MaterialIcons name="directions-car" size={50} color={colorTheme} />
             <Text style={{ color: textColor, fontSize: 22, fontWeight: 'bold', marginTop: 15, textAlign: 'center' }}>Smart Trip Detection</Text>
           </View>
+
+          <PermissionProgressBar step={2} />
 
           <Text style={{ color: subTextColor, fontSize: 16, textAlign: 'center', marginBottom: 15, lineHeight: 22 }}>
             This permission allows TravelSense to detect when you are driving automatically. 
